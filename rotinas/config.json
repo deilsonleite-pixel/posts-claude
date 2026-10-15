@@ -1,0 +1,92 @@
+{
+  "fuso": "America/Sao_Paulo",
+  "centrais": {
+    "marcelao": {
+      "nome": "Central Marcelão",
+      "plataforma": "metricool",
+      "plataforma_nome": "Metricool",
+      "metricool_blog_id": "7370375",
+      "redes": {
+        "instagram": "Instagram",
+        "facebook": "Facebook",
+        "youtube": "YouTube"
+      },
+      "redes_conectadas": [
+        "instagram",
+        "facebook"
+      ],
+      "padrao_redes": {
+        "post": [
+          "instagram",
+          "facebook"
+        ],
+        "carrossel": [
+          "instagram",
+          "facebook"
+        ],
+        "reel": [
+          "instagram",
+          "youtube"
+        ]
+      },
+      "midia": {
+        "hospedagem": "github",
+        "repo": "deilsonleite-pixel/posts-claude",
+        "branch": "main",
+        "pasta": "marcelao",
+        "clone_local": ".",
+        "obs": "Repositório informado pelo Deilson em 15/10/2026 (substitui o Google Drive). Preencher repo (dono/nome), clone_local e confirmar que é público para o Metricool baixar."
+      }
+    },
+    "cunha": {
+      "nome": "Central Cunha Law",
+      "plataforma": "zoho",
+      "plataforma_nome": "Zoho Social",
+      "redes": {
+        "instagram": "Instagram",
+        "facebook": "Facebook",
+        "youtube": "YouTube"
+      },
+      "redes_conectadas": [
+        "instagram"
+      ],
+      "padrao_redes": {
+        "post": [
+          "instagram"
+        ],
+        "carrossel": [
+          "instagram"
+        ],
+        "reel": [
+          "instagram"
+        ]
+      },
+      "fuso_legado_grade": "America/New_York",
+      "midia": {
+        "hospedagem": "github",
+        "repo": "deilsonleite-pixel/posts-claude",
+        "branch": "main",
+        "pasta": "cunhalaw",
+        "clone_local": "."
+      },
+      "zoho_ate": "2026-10-20",
+      "repo_raw": "https://raw.githubusercontent.com/deilsonleite-pixel/posts-claude/main/cunhalaw/",
+      "rotina_inclui": [
+        "2026-10-15-ajuste-status-justica",
+        "2026-10-16-ead-sem-extensao",
+        "2026-10-19-visto-x-status"
+      ],
+      "zoho": {
+        "accounts": "https://accounts.zoho.com",
+        "api": "https://social.zoho.com/social/v2",
+        "portal_id": "792262453",
+        "brand_id": "1215134000000018039",
+        "redes": {
+          "instagram": "instagram",
+          "facebook": "facebookpage",
+          "youtube": "youtube"
+        }
+      }
+    }
+  }
+}
