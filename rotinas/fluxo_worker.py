@@ -418,14 +418,39 @@ def plano_rotina_instagram(central, c, pecas, fluxo, dump):
 # Credenciais só no ambiente da nuvem "Cunha Law.": ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_REFRESH_TOKEN.
 # A API documenta criar agendamento (POST /posts/schedules) e consultar status por rede (GET /posts/publish/{post_id});
 # NÃO documenta listar nem cancelar agendamentos: cancelamento é pedido ao usuário no Zoho e conferido pelo status.
-def zoho_token(z):
-    import urllib.request, urllib.parse
+ZOHO_TOKEN_MIN = 50            # o token de acesso do Zoho vale 60 min; reaproveita por 50 (o Zoho limita pedidos de token)
+
+def zoho_token_arq():
+    import tempfile
+    return os.path.join(os.environ.get("CENTRAIS_TMP") or os.path.join(tempfile.gettempdir(), "centrais"), "zoho_token.json")
+
+def zoho_token(z, renovar=False):
+    """Token de acesso reaproveitado na rodada inteira (plano + cada zoho-criar): guardado em $CENTRAIS_TMP/zoho_token.json."""
+    import urllib.request, urllib.parse, hashlib, time
+    arq = zoho_token_arq()
+    cli = hashlib.sha256(os.environ["ZOHO_CLIENT_ID"].encode()).hexdigest()[:16]
+    if not renovar:
+        try:
+            j = json.load(open(arq))
+            if j.get("cli") == cli and j.get("accounts") == z["accounts"] and time.time() - float(j["em"]) < ZOHO_TOKEN_MIN * 60 and j.get("access_token"):
+                return j["access_token"]
+        except Exception:
+            pass
     data = urllib.parse.urlencode({"refresh_token": os.environ["ZOHO_REFRESH_TOKEN"], "client_id": os.environ["ZOHO_CLIENT_ID"],
                                    "client_secret": os.environ["ZOHO_CLIENT_SECRET"], "grant_type": "refresh_token"}).encode()
     with urllib.request.urlopen(urllib.request.Request(z["accounts"] + "/oauth/v2/token", data=data), timeout=30) as r:
         j = json.load(r)
     if "access_token" not in j:
         raise RuntimeError("Zoho recusou o login: " + str(j.get("error")))
+    try:
+        os.makedirs(os.path.dirname(arq), exist_ok=True)
+        tmp = arq + ".tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            json.dump({"access_token": j["access_token"], "em": time.time(), "cli": cli, "accounts": z["accounts"]}, fh)
+        os.replace(tmp, arq)
+    except Exception:
+        pass  # sem cache: funciona, só pede token de novo na próxima chamada
     return j["access_token"]
 
 def zoho_req(z, tok, method, path, body=None):
@@ -477,11 +502,73 @@ def zoho_midia(c, doc, p):
         out.append({"file_path": u, "name": f"{doc}-{i:02d}.jpg", "type": "image", "format": "jpg", "size": len(b), "width": w, "height": h})
     return out
 
+ZOHO_MAX_PAG = 50
+
+def zoho_agendados(z, tok):
+    """Agendamentos do Zoho por GET /posts/schedules?cursor=N (sem documentação oficial; 10 por página).
+    Devolve a lista completa, ou None se alguma página falhar (lista incompleta não serve para decidir reenvio)."""
+    out, path, vistos = [], "/posts/schedules", set()
+    for _ in range(ZOHO_MAX_PAG):
+        code, js = zoho_req(z, tok, "GET", path)
+        if code != 200 or not isinstance(js, dict):
+            return None
+        pag = js.get("data") or []
+        out += pag
+        cur = js.get("cursor")
+        if cur in (None, "") or not pag or str(cur) in vistos:
+            return out
+        vistos.add(str(cur))
+        path = f"/posts/schedules?cursor={cur}"
+    return None
+
+def zoho_texto(p):
+    return " ".join((m.get("message") or m.get("text") or m.get("content") or "") for m in (p.get("messages") or []) if isinstance(m, dict))
+
+def zoho_redes_do_post(x):
+    """Redes citadas no item da lista (qualquer chave "network", em qualquer nível)."""
+    out = set()
+    if isinstance(x, dict):
+        for k, v in x.items():
+            if k == "network" and isinstance(v, str):
+                out.add(v)
+            else:
+                out |= zoho_redes_do_post(v)
+    elif isinstance(x, list):
+        for v in x:
+            out |= zoho_redes_do_post(v)
+    return out
+
+def zoho_achar(agendados, quando, texto, usados, rede_z):
+    """Post já existente no Zoho para este conteúdo e esta rede (mesmo horário + mesmo começo de texto).
+    Instagram e Facebook da mesma peça são posts separados com o mesmo horário e texto: só adota o da rede certa.
+    Devolve (post, None), (None, None) se não existe, ou (None, motivo) se não dá para saber com segurança."""
+    ms = int(q_dt(quando).timestamp() * 1000)
+    t = norm(texto)[:60]
+    incertos = 0
+    for p in agendados:
+        pid = str(p.get("post_id") or "")
+        try:
+            st = int(p.get("schedule_time") or 0)
+        except Exception:
+            continue
+        if not (pid and pid not in usados and t and abs(st - ms) < 60000 and norm(zoho_texto(p)).startswith(t)):
+            continue
+        redes = zoho_redes_do_post(p)
+        if rede_z in redes:
+            return p, None
+        if not redes:
+            incertos += 1
+    if incertos:
+        return None, "há post no mesmo horário e texto, mas a lista do Zoho não diz a rede"
+    return None, None
+
 def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
     z = c["zoho"]
     nome = c["plataforma_nome"]
     postado = set(os.path.basename(f)[:-5] for f in glob.glob(os.path.join(dump, "postado", "*.json")))
     marcas, acoes, avisos = [], [], []
+    zl = {}   # lista de agendamentos do Zoho, buscada uma vez e só se algum envio ficou incerto
+    usados_z = {str((e.get("ext") or {}).get("id")) for f in fluxo.values() for e in (f.get("plat") or {}).values() if e and (e.get("ext") or {}).get("id")}
     try:
         tok = None if sem_conexao else zoho_token(z)
     except Exception as e:
@@ -540,14 +627,16 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
         # 2) autorizado e ainda sem agendamento no Zoho
         if want and p:
             data = p.get("data") or ""
+            texto = (aut.get("snap") or {}).get("texto") or ((p.get("legenda") or "") + ("\n\n" + p["hashtags"] if p.get("hashtags") else ""))
             for r, q in sorted(want.items()):
                 e0 = plat.get(r) or {}
+                if "p_" + doc in postado:
+                    if e0.get("st") != "concluido" or e0.get("aut") != aut["id"]:
+                        patch[r] = plat_entry("concluido", quando=q, rev=rev, aut=aut["id"], sync=now_iso())
+                    continue
                 if data <= c.get("zoho_ate", "") and doc not in (c.get("rotina_inclui") or []):
                     if e0.get("st") != "externo" or e0.get("aut") != aut["id"]:
                         patch[r] = plat_entry("externo", quando=q, rev=rev, aut=aut["id"], sync=now_iso(), erro=f"Agendado no {nome} pela equipe antes da Central; sem identificador para conferir.")
-                    continue
-                if "p_" + doc in postado:
-                    patch[r] = plat_entry("concluido", quando=q, rev=rev, aut=aut["id"], sync=now_iso())
                     continue
                 if r not in c.get("redes_conectadas", []):
                     if e0.get("erro_cod") != "rede_nao_conectada":
@@ -563,6 +652,23 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
                         if (e0.get("tent") or 0) >= MAX_TENT and e0.get("erro_cod") != "sem_confirmacao":
                             patch[r] = dict(e0, st="falha", erro=f"Envio ao {nome} sem resposta clara após {e0.get('tent')} tentativas. Confira no {nome} se o post existe antes de reautorizar.", erro_cod="sem_confirmacao")
                         continue
+                    # resultado incerto e sem id: antes de reenviar, procura o post no Zoho (evita duplicar)
+                    if "l" not in zl:
+                        zl["l"] = zoho_agendados(z, tok)
+                    if zl["l"] is None:
+                        avisos.append(f"{doc} · {r}: lista de agendamentos do {nome} indisponível; não reenvia nesta rodada")
+                        continue
+                    achado, duvida = zoho_achar(zl["l"], q, texto, usados_z, z["redes"].get(r, r))
+                    if duvida:
+                        avisos.append(f"{doc} · {r}: {duvida}; não reenvia (confira no {nome})")
+                        continue
+                    if achado:
+                        pid = str(achado["post_id"])
+                        usados_z.add(pid)
+                        patch[r] = plat_entry("enviado", ext={"id": pid, "url": "https://social.zoho.com"}, quando=q, rev=rev, aut=aut["id"], desde=now_iso(), tent=e0.get("tent") or 0)
+                        marcas.append({"doc": doc, "patch": {}, "evento": ("enviado", f"{r} · {q} · já existia no {nome} (post {pid}); nenhum envio repetido")})
+                        avisos.append(f"{doc} · {r}: post {pid} encontrado no {nome}; adotado em vez de reenviar")
+                        continue
                 if e0.get("st") == "falha" and e0.get("aut") == aut["id"]:
                     continue
                 med = zoho_midia(c, doc, p)
@@ -571,7 +677,7 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
                         patch[r] = plat_entry("aguardando_midia", quando=q, rev=rev, aut=aut["id"], desde=now_iso(), erro="Imagens desta versão ainda não estão no repositório (a rotina de imagens prepara).")
                     continue
                 corpo = {"post": {"type": "schedule", "schedule_time": int(q_dt(q).timestamp() * 1000),
-                                  "messages": [{"message": (aut.get("snap") or {}).get("texto") or ((p.get("legenda") or "") + ("\n\n" + p["hashtags"] if p.get("hashtags") else "")),
+                                  "messages": [{"message": texto,
                                                 "has_media": "image", "medias": med,
                                                 "channels": [{"network": z["redes"].get(r, r), "brand_id": z["brand_id"]}]}]}}
                 acoes.append({"tipo": "zoho_criar", "doc": doc, "redes": [r], "quando": q, "corpo": corpo, "aut": aut["id"],
@@ -595,6 +701,9 @@ def zoho_criar(central, acao_path):
     a = json.load(open(acao_path))
     tok = zoho_token(z)
     code, js = zoho_req(z, tok, "POST", "/posts/schedules", a["corpo"])
+    if code == 401:  # token guardado foi invalidado: o post não foi criado; pede um novo e tenta uma vez
+        tok = zoho_token(z, renovar=True)
+        code, js = zoho_req(z, tok, "POST", "/posts/schedules", a["corpo"])
     item = ((js.get("data") or [{}]) or [{}])[0] if isinstance(js, dict) else {}
     ok = code == 200 and item.get("success") and item.get("post_id")
     r0 = a["redes"][0]
@@ -676,7 +785,7 @@ def midia(central, dump, doc):
         return {"ok": False, "erro": f"Achei {len(locais)} arquivo(s) final(is), mas a peça autorizada tem {n}.", "erro_cod": "midia_divergente", "locais": locais}
     repo, clone = m.get("repo"), os.path.expanduser(m.get("clone_local") or "")
     if not repo or not clone or not os.path.isdir(os.path.join(clone, ".git")):
-        return {"ok": False, "erro": "Hospedagem de mídia no GitHub ainda não configurada (falta o repositório clonado neste Mac com acesso para enviar). Nada foi enviado.", "erro_cod": "midia_nao_configurada"}
+        return {"ok": False, "erro": "Hospedagem de mídia no GitHub indisponível nesta rodada (a rotina na nuvem não conseguiu enviar ao repositório posts-claude). Nada foi enviado.", "erro_cod": "midia_nao_configurada"}
     pasta = os.path.join(m.get("pasta") or central, doc)
     os.makedirs(os.path.join(clone, pasta), exist_ok=True)
     rel = []

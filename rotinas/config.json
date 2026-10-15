@@ -48,7 +48,8 @@
         "youtube": "YouTube"
       },
       "redes_conectadas": [
-        "instagram"
+        "instagram",
+        "facebook"
       ],
       "padrao_redes": {
         "post": [

@@ -149,6 +149,78 @@ r = zplano({"c": {"aprov": APR, "aut": A}}, {"c": dict(PZ["c"], data="2026-10-19
 ok("Zoho: até 20/10 (agendado pela equipe) não envia de novo", not r["acoes"] and pz(r)["st"] == "externo", r)
 r = zplano({"c": {"aprov": APR, "aut": A, "plat": pl}}, PZ, lambda p: (200, {"data": [{"network": "instagram", "status": "unpublished", "error": {"code": 1, "message": "token expirado"}}]}))
 ok("Zoho: erro da rede aparece como Falha com a mensagem", pz(r)["st"] == "falha" and "token expirado" in pz(r)["erro"], r)
+r = zplano({"c": {"aprov": APR, "aut": A}}, {"c": dict(PZ["c"], data="2026-10-19")}, lambda p: (200, {}), postado=("p_c",))
+ok("Zoho: publicado até 20/10 aparece como concluído (não externo)", pz(r)["st"] == "concluido" and not r["acoes"], r)
+
+# 13b. Zoho: envio incerto (enviando sem id) -> procura na lista do Zoho antes de reenviar
+MS = int(fw.q_dt(FUT).timestamp() * 1000)
+ENV = {"c": {"aprov": APR, "aut": A, "plat": {"instagram": {"st": "enviando", "aut": "A1", "desde": iso(NOW - dt.timedelta(minutes=60)), "tent": 1, "quando": FUT}}}}
+def lista(itens, chamadas=None):
+    pags = {"/posts/schedules": (200, {"cursor": 10, "data": [{"post_id": "111", "schedule_time": MS + 3600000, "messages": [{"message": TXT}]}]}),
+            "/posts/schedules?cursor=10": (200, {"cursor": None, "data": itens})}
+    def f(p):
+        if chamadas is not None: chamadas.append(p)
+        return pags.get(p, (200, {}))
+    return f
+ch = []
+r = zplano(ENV, PZ, lista([{"post_id": "777", "schedule_time": MS, "messages": [{"message": TXT + " #imigracao", "channels": [{"network": "instagram"}]}]}], ch))
+ok("Zoho: post já existente (mesmo horário e começo do texto) é adotado, sem reenviar", not r["acoes"] and pz(r)["st"] == "enviado" and pz(r)["ext"]["id"] == "777" and "/posts/schedules?cursor=10" in ch, r)
+r = zplano(ENV, PZ, lista([{"post_id": "777", "schedule_time": MS, "messages": [{"message": "Outro post qualquer"}]}]))
+ok("Zoho: nada parecido na lista -> nova tentativa numerada", len(r["acoes"]) == 1 and r["acoes"][0]["tipo"] == "zoho_criar" and r["acoes"][0]["claim"]["plat"]["instagram"]["tent"] == 2, r)
+r = zplano(dict(ENV, d={"aprov": APR, "plat": {"instagram": {"st": "agendado", "ext": {"id": "777"}, "quando": FUT}}}), PZ,
+           lambda p: lista([{"post_id": "777", "schedule_time": MS, "messages": [{"message": TXT, "channels": [{"network": "instagram"}]}]}])(p) if "schedules" in p else (200, {"data": [{"network": "instagram", "status": "scheduled"}]}))
+ok("Zoho: post que já pertence a outra peça não é adotado", any(a["tipo"] == "zoho_criar" and a["doc"] == "c" for a in r["acoes"]), r)
+r = zplano(ENV, PZ, lambda p: (500, {}) if "schedules" in p else (200, {}))
+ok("Zoho: lista indisponível -> não reenvia nesta rodada", not r["acoes"] and not pz(r), r)
+
+# 13d. Zoho: Instagram + Facebook = um agendamento por rede (Facebook = "facebookpage")
+def canal(a): return a["corpo"]["post"]["messages"][0]["channels"][0]["network"]
+AF = aut(redes=("instagram", "facebook"))
+r = zplano({"c": {"aprov": APR, "aut": AF}}, PZ, lambda p: (200, {}))
+ok("Zoho: IG+FB gera duas ações zoho_criar separadas", sorted((a["redes"][0], canal(a)) for a in r["acoes"] if a["tipo"] == "zoho_criar") == [("facebook", "facebookpage"), ("instagram", "instagram")], r)
+PIG = {"instagram": {"st": "agendado", "aut": "A1", "ext": {"id": "99"}, "quando": FUT, "rev": 1, "sync": iso(NOW)}}
+r = zplano({"c": {"aprov": APR, "aut": AF, "plat": PIG}}, PZ, lambda p: (200, {"data": [{"network": "instagram", "status": "scheduled"}]}))
+ok("Zoho: Facebook acrescentado a post já agendado no IG cria só o do Facebook", [(a["redes"], canal(a)) for a in r["acoes"]] == [(["facebook"], "facebookpage")], r)
+def pzr(r, rede):
+    for m in r["marcas"]:
+        if m["patch"].get("plat", {}).get(rede): return m["patch"]["plat"][rede]
+    return {}
+ENVF = {"c": {"aprov": APR, "aut": AF, "plat": {k: {"st": "enviando", "aut": "A1", "desde": iso(NOW - dt.timedelta(minutes=60)), "tent": 1, "quando": FUT} for k in ("instagram", "facebook")}}}
+dois = [{"post_id": "701", "schedule_time": MS, "messages": [{"message": TXT, "channels": [{"network": "instagram"}]}]},
+        {"post_id": "702", "schedule_time": MS, "messages": [{"message": TXT, "channels": [{"network": "facebookpage"}]}]}]
+r = zplano(ENVF, PZ, lista(dois))
+ok("Zoho: adoção respeita a rede (IG pega o post do IG, FB o do FB)", not r["acoes"] and pzr(r, "instagram").get("ext", {}).get("id") == "701" and pzr(r, "facebook").get("ext", {}).get("id") == "702", r)
+r = zplano(ENVF, PZ, lista(dois[:1]))
+ok("Zoho: só o post do IG existe -> FB não adota o do IG e é reenviado", pzr(r, "instagram").get("ext", {}).get("id") == "701" and [a["redes"] for a in r["acoes"]] == [["facebook"]], r)
+r = zplano(ENVF, PZ, lista([{"post_id": "703", "schedule_time": MS, "messages": [{"message": TXT}]}]))
+ok("Zoho: lista sem a rede do post -> não adota nem reenvia (evita trocar IG por FB)", not r["acoes"] and not pzr(r, "instagram") and not pzr(r, "facebook"), r)
+
+# 13c. Zoho: token de acesso pedido uma vez e reaproveitado por 50 min (entre processos, via $CENTRAIS_TMP)
+import io, urllib.request, time
+def novo_fw():
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
+tmpd = tempfile.mkdtemp()
+os.environ.update(CENTRAIS_TMP=tmpd, ZOHO_CLIENT_ID="cid", ZOHO_CLIENT_SECRET="sec", ZOHO_REFRESH_TOKEN="ref")
+pedidos = []
+def fake_urlopen(req, timeout=None):
+    pedidos.append(req.full_url)
+    return io.BytesIO(json.dumps({"access_token": "T%d" % len(pedidos)}).encode())
+urlopen0, urllib.request.urlopen = urllib.request.urlopen, fake_urlopen
+ZC = fw.CFG["centrais"]["cunha"]["zoho"]
+toks = [novo_fw().zoho_token(ZC) for _ in range(12)]   # 12 processos (plano + 11 zoho-criar) na mesma rodada
+arq = os.path.join(tmpd, "zoho_token.json")
+ok("Zoho: 12 chamadas na rodada = 1 pedido de token", len(pedidos) == 1 and set(toks) == {"T1"} and oct(os.stat(arq).st_mode & 0o777) == "0o600", {"pedidos": pedidos, "toks": toks})
+j = json.load(open(arq)); j["em"] = time.time() - 51 * 60; json.dump(j, open(arq, "w"))
+t = novo_fw().zoho_token(ZC)
+ok("Zoho: token com mais de 50 min é renovado", len(pedidos) == 2 and t == "T2", {"pedidos": pedidos, "t": t})
+m = novo_fw(); env = []
+m.zoho_req = lambda z, tok, met, path, body=None: (env.append(tok), (401, {}) if tok == "T2" else (200, {"data": [{"success": True, "post_id": "555"}]}))[1]
+af = os.path.join(tmpd, "acao.json")
+json.dump({"redes": ["instagram"], "quando": FUT, "aut": "A1", "esperado": {"rev": 1}, "corpo": {}, "claim": {"plat": {"instagram": {"tent": 1}}}}, open(af, "w"))
+res = m.zoho_criar("cunha", af)
+ok("Zoho: token recusado (401) é renovado uma vez e o envio segue", res["ok"] and env == ["T2", "T3"] and len(pedidos) == 3, {"res": res, "env": env})
+urllib.request.urlopen = urlopen0
+shutil.rmtree(tmpd)
 
 # 14. Metricool fora do ar: mantém aguardando, não marca falha nas peças
 r = roda("marcelao", {"x": {"aprov": APR, "aut": aut(), "plat": pl}}, None, PEC, ["--sem-conexao", "timeout"])
