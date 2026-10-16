@@ -10,6 +10,10 @@ Pode haver vários pedidos para a mesma peça. Revisões são ilimitadas até a 
 - `alt.pedidos` é a lista dos pedidos da peça, em ordem. Cada item tem `texto`, `em`, `por`, `anexos` e `rev_base`. `alt.texto` junta todos (os acréscimos vêm como "[Acréscimo de DD/MM às HH:MM] ..."). Documentos antigos podem não ter `pedidos`: aí vale só `alt.texto`.
 - `alt_hist` guarda os pedidos já concluídos, cancelados ou aprovados. É só histórico: não refaça nada dele, mas leia para entender o que já foi pedido e feito antes.
 
+## Urgentes primeiro (regra de 16/10/2026, ver rotinas/FLUXO.md)
+
+Pedido em peça com `urgente = true` vai para a frente da fila. Mantenha `urgente = true` e a data de hoje; a peça volta para aprovação e, com "Pode postar", é publicada na hora.
+
 ## Passos
 
 1. Monte a fila. Para cada central: ArtifactData action "query", collection "fluxo", query {"where":[["alt.estado","in",["registrada","encaminhada"]]],"limit":100}. Se o filtro aninhado não funcionar, use "list" (limit 1000) e filtre você mesmo os documentos com alt.estado "registrada" ou "encaminhada". Ignore documentos com "excluido" ou "descartado". Junte as duas centrais numa lista só e ordene por `alt.em`, do mais antigo para o mais novo.

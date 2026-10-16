@@ -134,6 +134,15 @@ A = aut(redes=("instagram",))
 PZ = {"c": {"tipo": "post", "rev": 1, "data": FUTD, "slides": [{}], "atualizado": "x"}}
 r = zplano({"c": {"aprov": APR, "aut": A}}, PZ, lambda p: (200, {}))
 ok("Zoho: Pode postar gera um agendamento com horário em ms e imagem do repositório", len(r["acoes"]) == 1 and r["acoes"][0]["tipo"] == "zoho_criar" and r["acoes"][0]["corpo"]["post"]["schedule_time"] > 0 and r["acoes"][0]["corpo"]["post"]["messages"][0]["channels"][0]["network"] == "instagram", r)
+# urgente (regra de 16/10/2026): Pode postar publica na hora, mesmo com o horário da peça já passado
+PU = {"c": dict(PZ["c"], urgente=True)}
+r = zplano({"c": {"aprov": APR, "aut": aut(redes=("instagram", "facebook"), q=PAST)}}, PU, lambda p: (200, {}))
+ok("Zoho: urgente com Pode postar vira Publicar agora (POST /posts/publish, sem schedule_time), IG e FB",
+   len(r["acoes"]) == 2 and all(a["endpoint"] == "/posts/publish" and a["agora"] and a["corpo"]["post"]["type"] == "publish" and "schedule_time" not in a["corpo"]["post"] for a in r["acoes"]), r)
+r = zplano({"c": {"aprov": APR, "aut": aut(redes=("instagram",), q=PAST)}}, PZ, lambda p: (200, {}))
+ok("Zoho: não urgente com horário passado continua sem sair (nada publica na hora)", not r["acoes"] and pz(r).get("erro_cod") == "horario_passou", r)
+r = zplano({"c": {"aprov": APR}}, PU, lambda p: (200, {}))
+ok("Zoho: urgente só aprovado, sem Pode postar, não publica", not r["acoes"], r)
 r = zplano({"c": {"aprov": APR, "aut": A}}, PZ, lambda p: (200, {}), midia=False)
 ok("Zoho: sem imagem da versão, não envia (aguarda mídia)", not r["acoes"] and pz(r)["st"] == "aguardando_midia", r)
 pl = {"instagram": {"st": "enviado", "aut": "A1", "ext": {"id": "99"}, "quando": FUT, "rev": 1}}

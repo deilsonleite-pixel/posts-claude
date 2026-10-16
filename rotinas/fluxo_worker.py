@@ -628,6 +628,9 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
         # 2) autorizado e ainda sem agendamento no Zoho
         if want and p:
             data = p.get("data") or ""
+            # URGENTE (regra do Deilson, 16/10/2026): peça marcada "urgente" com Pode postar é publicada NA HORA
+            # (Publicar agora: POST /posts/publish, sem schedule_time). Não mexe em nada que já está programado.
+            urgente = bool(p.get("urgente"))
             texto = (aut.get("snap") or {}).get("texto") or ((p.get("legenda") or "") + ("\n\n" + p["hashtags"] if p.get("hashtags") else ""))
             for r, q in sorted(want.items()):
                 e0 = plat.get(r) or {}
@@ -643,7 +646,7 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
                     if e0.get("erro_cod") != "rede_nao_conectada":
                         patch[r] = plat_entry("falha", quando=q, rev=rev, aut=aut["id"], erro=f"{r} não está configurado na integração do {nome}.", erro_cod="rede_nao_conectada", desde=now_iso())
                     continue
-                if q_dt(q) <= AGORA + dt.timedelta(minutes=10):
+                if not urgente and q_dt(q) <= AGORA + dt.timedelta(minutes=10):
                     if e0.get("erro_cod") != "horario_passou" or e0.get("aut") != aut["id"]:
                         patch[r] = plat_entry("falha", quando=q, rev=rev, aut=aut["id"], erro=f"O horário {q.replace('T', ' ')} passou sem agendamento. Defina nova data nos Detalhes: nada sai imediatamente.", erro_cod="horario_passou", desde=now_iso())
                     continue
@@ -677,11 +680,14 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
                     if e0.get("st") != "aguardando_midia":
                         patch[r] = plat_entry("aguardando_midia", quando=q, rev=rev, aut=aut["id"], desde=now_iso(), erro="Imagens desta versão ainda não estão no repositório (a rotina de imagens prepara).")
                     continue
-                corpo = {"post": {"type": "schedule", "schedule_time": int(q_dt(q).timestamp() * 1000),
-                                  "messages": [{"message": texto,
-                                                "has_media": "image", "medias": med,
-                                                "channels": [{"network": z["redes"].get(r, r), "brand_id": z["brand_id"]}]}]}}
+                msgs = [{"message": texto, "has_media": "image", "medias": med,
+                         "channels": [{"network": z["redes"].get(r, r), "brand_id": z["brand_id"]}]}]
+                if urgente:
+                    corpo, endpoint = {"post": {"type": "publish", "messages": msgs}}, "/posts/publish"
+                else:
+                    corpo, endpoint = {"post": {"type": "schedule", "schedule_time": int(q_dt(q).timestamp() * 1000), "messages": msgs}}, "/posts/schedules"
                 acoes.append({"tipo": "zoho_criar", "doc": doc, "redes": [r], "quando": q, "corpo": corpo, "aut": aut["id"],
+                              "endpoint": endpoint, "agora": urgente,
                               "esperado": {"aut_id": aut["id"], "rev": rev},
                               "claim": {"plat": {r: plat_entry("enviando", quando=q, rev=rev, aut=aut["id"], desde=now_iso(), tent=(e0.get("tent") or 0) + 1 if e0.get("aut") == aut["id"] else 1)}}})
         if patch:
@@ -789,10 +795,11 @@ def zoho_criar(central, acao_path):
     z = c["zoho"]
     a = json.load(open(acao_path))
     tok = zoho_token(z)
-    code, js = zoho_req(z, tok, "POST", "/posts/schedules", a["corpo"])
+    endpoint = a.get("endpoint") or "/posts/schedules"   # /posts/publish = Publicar agora (peça urgente)
+    code, js = zoho_req(z, tok, "POST", endpoint, a["corpo"])
     if code == 401:  # token guardado foi invalidado: o post não foi criado; pede um novo e tenta uma vez
         tok = zoho_token(z, renovar=True)
-        code, js = zoho_req(z, tok, "POST", "/posts/schedules", a["corpo"])
+        code, js = zoho_req(z, tok, "POST", endpoint, a["corpo"])
     item = ((js.get("data") or [{}]) or [{}])[0] if isinstance(js, dict) else {}
     ok = code == 200 and item.get("success") and item.get("post_id")
     r0 = a["redes"][0]
@@ -800,7 +807,8 @@ def zoho_criar(central, acao_path):
         e = plat_entry("enviado", ext={"id": str(item["post_id"]), "url": "https://social.zoho.com"}, quando=a["quando"], rev=a["esperado"]["rev"], aut=a["aut"], desde=now_iso(), tent=a["claim"]["plat"][r0]["tent"])
         if item.get("is_approval_needed"):
             e["erro"] = "O Zoho marcou o post como dependente de aprovação interna: aprove no Zoho para ele ficar agendado."
-        return {"ok": True, "plat": {r: e for r in a["redes"]}, "evento": ["enviado", f"{', '.join(a['redes'])} · {a['quando']} · Zoho post {item['post_id']}"]}
+        modo = "publicado agora (urgente)" if a.get("agora") else a["quando"]
+        return {"ok": True, "plat": {r: e for r in a["redes"]}, "evento": ["enviado", f"{', '.join(a['redes'])} · {modo} · Zoho post {item['post_id']}"]}
     if code in (0, 500, 502, 503, 504):
         return {"ok": False, "incerto": True, "msg": f"Zoho não respondeu (HTTP {code}). Deixe 'enviando'; a próxima rodada confere antes de reenviar."}
     msg = item.get("message") or js.get("message") or js.get("erro") or str(js)[:200]

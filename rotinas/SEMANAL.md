@@ -2,7 +2,7 @@
 
 Responda em português do Brasil. Fuso: America/Sao_Paulo. Os endereços das Centrais vêm no texto da rotina.
 
-Objetivo: manter 30 dias de conteúdo preparado em cada Central, revisar o que já está na grade e repor o que falta. Você NÃO aprova, NÃO autoriza e NÃO agenda nada: isso é só do Deilson na Central.
+Objetivo: manter 30 dias de conteúdo preparado em cada Central, revisar o que já está na grade e repor o que falta. Você NÃO aprova, NÃO autoriza e NÃO agenda nada: isso é só do Deilson na Central. Peças urgentes (`urgente = true`) são publicadas na hora pelo fluxo da fila: não mexa nelas nem conte-as como grade (ver FLUXO.md).
 
 Centrais:
 - marcelao (skills: cliente-marcelao, copy-redes-clientes, design-feed)

@@ -53,10 +53,12 @@
       ],
       "padrao_redes": {
         "post": [
-          "instagram"
+          "instagram",
+          "facebook"
         ],
         "carrossel": [
-          "instagram"
+          "instagram",
+          "facebook"
         ],
         "reel": [
           "instagram"
