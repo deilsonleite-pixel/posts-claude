@@ -75,7 +75,8 @@
       "rotina_inclui": [
         "2026-10-15-ajuste-status-justica",
         "2026-10-16-ead-sem-extensao",
-        "2026-10-19-visto-x-status"
+        "2026-10-19-visto-x-status",
+        "2026-10-19-prazo-21-anos"
       ],
       "zoho": {
         "accounts": "https://accounts.zoho.com",
