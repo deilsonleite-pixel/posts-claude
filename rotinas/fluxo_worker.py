@@ -10,6 +10,7 @@ Uso:
   fluxo_worker.py midia   <central> <dump_dir> <doc_id>          copia a mídia da peça para o Drive
   fluxo_worker.py limpar  <central> <dump_dir> <doc_id> [--executar]   arquivos exclusivos da peça excluída
   fluxo_worker.py migrar  <central> <dump_dir> [--posts posts.json]    cria fluxo/<id> para peças antigas
+  fluxo_worker.py zoho-hora <central> <acao.json>                     troca só a hora de um post do Zoho para a da Central
 
 dump_dir contém pecas/*.json e fluxo/*.json (ArtifactData list com out_dir).
 posts.json é a resposta crua de getScheduledPosts do Metricool ({"data":[...]}) ou a lista.
@@ -691,8 +692,96 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
                 acoes.append({"tipo": "limpar_arquivos", "doc": doc, "arquivos": exc.get("arquivos") or []})
             elif exc.get("estado") != "cancelando":
                 marcas.append({"doc": doc, "patch": {"excluido": dict(exc, estado="cancelando")}})
+    # 3) conferência de horário: todo post ainda agendado no Zoho tem de sair no horário da Central
+    if "l" not in zl:
+        zl["l"] = zoho_agendados(z, tok)
+    if zl["l"] is None:
+        avisos.append(f"lista de agendamentos do {nome} indisponível; conferência de horário fica para a próxima rodada")
+    else:
+        acoes += zoho_conferir_horarios(c, pecas, fluxo, zl["l"], usados_z, avisos)
     status = {"ok": True, "msg": "", "acao": "", "em": now_iso(), "plataforma": nome, "redes": c.get("redes_conectadas")}
     return {"central": central, "plataforma": "zoho", "agora": AGORA.strftime("%Y-%m-%dT%H:%M"), "status_plataforma": status, "acoes": acoes, "marcas": marcas, "avisos": avisos}
+
+def hora_central(c, p):
+    """Horário da peça na Central (hora de Orlando) convertido para Brasília, ou None se a peça não tem hora."""
+    m = re.search(r"(\d{1,2})(?::(\d{2}))?\s*h", p.get("hora") or "")
+    if not (p.get("data") and m):
+        return None
+    tzl = ZoneInfo(c.get("fuso_legado_grade") or "America/Sao_Paulo")
+    local = dt.datetime.strptime(p["data"], "%Y-%m-%d").replace(hour=int(m.group(1)), minute=int(m.group(2) or 0), tzinfo=tzl)
+    return local.astimezone(SP).strftime("%Y-%m-%dT%H:%M")
+
+def zoho_conferir_horarios(c, pecas, fluxo, agendados, usados_z, avisos):
+    """Posts agendados no Zoho fora do fluxo da Central (feitos à mão ou antes da Central) não têm hora conferida pelo
+    passo 1. Aqui cada um é ligado à sua peça pelo texto e, se o horário não bate com a Central (mesma data), vira
+    a ação zoho_hora, que só troca a hora (PUT). Data diferente, peça sem hora ou texto ambíguo: só aviso, nada muda.
+    Origem: 16/10/2026 posts agendados com data sem hora saíram à 00:00 de Brasília."""
+    acoes = []
+    chaves = {}
+    for doc, p in pecas.items():
+        f = fluxo.get(doc) or {}
+        if f.get("excluido") or not (f.get("aprov") or {}).get("on"):
+            continue
+        t = norm(p.get("legenda") or "")[:60]
+        if len(t) >= 30:
+            chaves[doc] = t
+    for x in agendados:
+        pid = str(x.get("post_id") or "")
+        try:
+            ms = int(x.get("schedule_time") or 0)
+        except Exception:
+            continue
+        if not pid or pid in usados_z or not ms:
+            continue
+        atual = dt.datetime.fromtimestamp(ms / 1000, SP)
+        if atual <= AGORA + dt.timedelta(minutes=15):
+            continue
+        texto = norm(zoho_texto(x))
+        docs = [d for d, t in chaves.items() if t in texto]
+        if len(docs) != 1:
+            continue  # reel, post sem peça na Central ou texto que serve a mais de uma peça: não mexe
+        doc = docs[0]
+        p = pecas[doc]
+        q = hora_central(c, p)
+        de = atual.strftime("%Y-%m-%dT%H:%M")
+        if not q:
+            avisos.append(f"{doc}: peça sem hora na Central; o {c['plataforma_nome']} está em {de.replace('T', ' ')} (Brasília). Defina a hora na Central.")
+            continue
+        if q == de:
+            continue
+        if q[:10] != de[:10]:
+            avisos.append(f"{doc}: {c['plataforma_nome']} em {de.replace('T', ' ')} e Central em {q.replace('T', ' ')} (Brasília), datas diferentes; nada foi mudado, confira no {c['plataforma_nome']}.")
+            continue
+        if q_dt(q) <= AGORA + dt.timedelta(minutes=15):
+            avisos.append(f"{doc}: horário da Central ({q.replace('T', ' ')}) já passou; o post continua em {de.replace('T', ' ')}.")
+            continue
+        acoes.append({"tipo": "zoho_hora", "doc": doc, "post_id": pid, "de": de, "para": q,
+                      "schedule_time": int(q_dt(q).timestamp() * 1000)})
+    return acoes
+
+def zoho_hora(central, acao_path):
+    """Executa uma ação zoho_hora: lê o post do Zoho, troca só o schedule_time (mesmo texto, imagens e redes) e confere."""
+    z = CFG["centrais"][central]["zoho"]
+    a = json.load(open(acao_path))
+    tok = zoho_token(z)
+    code, js = zoho_req(z, tok, "GET", f"/posts/schedules/{a['post_id']}")
+    d = (js or {}).get("data") if code == 200 else None
+    if not d:
+        return {"ok": False, "msg": f"post {a['post_id']} não encontrado no Zoho (HTTP {code}); nada mudou"}
+    if int(d.get("schedule_time") or 0) == a["schedule_time"]:
+        return {"ok": True, "msg": "já estava no horário da Central", "evento": ["hora_ok", f"{a['post_id']} · {a['para']}"]}
+    msgs = [{"message": m.get("message"), "has_media": m.get("has_media") or "image",
+             "medias": [{k: v for k, v in md.items() if k != "preview_url"} for md in (m.get("medias") or [])],
+             "channels": [{"network": ch["network"], "brand_id": ch["brand_id"]} for ch in (m.get("channels") or [])]}
+            for m in d.get("messages") or []]
+    corpo = {"post": {"type": "schedule", "schedule_time": a["schedule_time"], "messages": msgs}}
+    code, js = zoho_req(z, tok, "PUT", f"/posts/schedules/{a['post_id']}", corpo)
+    code2, js2 = zoho_req(z, tok, "GET", f"/posts/schedules/{a['post_id']}")
+    lido = int(((js2 or {}).get("data") or {}).get("schedule_time") or 0) if code2 == 200 else 0
+    if lido == a["schedule_time"]:
+        return {"ok": True, "evento": ["hora_corrigida", f"{a['doc']} · Zoho post {a['post_id']} · {a['de']} → {a['para']} (Brasília)"]}
+    return {"ok": False, "msg": f"Zoho não confirmou a troca de hora (HTTP {code}): {str(js)[:200]}",
+            "evento": ["falha", f"{a['doc']}: não consegui mudar a hora no Zoho de {a['de']} para {a['para']}; ajuste à mão"]}
 
 def zoho_criar(central, acao_path):
     """Executa uma ação zoho_criar (depois da trava gravada pela rotina). Imprime o resultado para gravar em plat."""
@@ -1006,6 +1095,8 @@ def main():
         r = plano(central, dump, opt.get("posts"), opt.get("sem-conexao"))
     elif cmd == "zoho-criar":
         r = zoho_criar(central, dump)
+    elif cmd == "zoho-hora":
+        r = zoho_hora(central, dump)
     elif cmd == "publicar-midia":
         # publicar-midia <central> <rev> <doc> arquivo1 arquivo2 ...
         r = publicar_midia(central, int(dump), rest[0], rest[1:])

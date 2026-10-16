@@ -226,5 +226,22 @@ shutil.rmtree(tmpd)
 r = roda("marcelao", {"x": {"aprov": APR, "aut": aut(), "plat": pl}}, None, PEC, ["--sem-conexao", "timeout"])
 ok("Sem resposta da plataforma: nada muda nas peças", not r["acoes"] and not r["marcas"] and r["status_plataforma"]["ok"] is False, r)
 
+# 14. Zoho: post agendado fora do fluxo com hora diferente da Central (caso 16/10: data sem hora saiu à meia-noite)
+import datetime as _dt
+fw2 = novo_fw() if "novo_fw" in dir() else fw
+FUTMS = lambda q: int(_dt.datetime.strptime(q, "%Y-%m-%dT%H:%M").replace(tzinfo=fw2.SP).timestamp() * 1000)
+LEG = "Legenda da peça com texto longo o bastante para identificar o post no Zoho."
+PH = {"h": {"tipo": "post", "rev": 1, "data": "2026-12-02", "hora": "12h", "legenda": LEG}}
+ag = [{"post_id": "900", "schedule_time": FUTMS("2026-12-02T00:00"), "messages": [{"message": "TITULO\n" + LEG}]},
+      {"post_id": "901", "schedule_time": FUTMS("2026-12-02T08:00"), "messages": [{"message": "Reel sem peça na Central"}]}]
+r = fw2.zoho_conferir_horarios(fw2.CFG["centrais"]["cunha"], PH, {"h": {"aprov": APR}}, ag, set(), [])
+ok("Zoho: post à meia-noite volta para a hora da Central (mesma data); reel sem peça não é tocado",
+   [(a["tipo"], a["post_id"], a["para"]) for a in r] == [("zoho_hora", "900", "2026-12-02T14:00")], r)
+av = []
+r = fw2.zoho_conferir_horarios(fw2.CFG["centrais"]["cunha"], PH, {"h": {"aprov": APR}}, [dict(ag[0], schedule_time=FUTMS("2026-12-03T14:00"))], set(), av)
+ok("Zoho: data diferente da Central só gera aviso", not r and av, (r, av))
+r = fw2.zoho_conferir_horarios(fw2.CFG["centrais"]["cunha"], PH, {"h": {"aprov": APR}}, ag, {"900"}, [])
+ok("Zoho: post do próprio fluxo não entra na conferência", not r, r)
+
 print("\n%d cenário(s) com falha" % len(falhas) if falhas else "\nTodos os cenários passaram.")
 sys.exit(1 if falhas else 0)
