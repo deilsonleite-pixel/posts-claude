@@ -11,6 +11,8 @@ Uso:
   fluxo_worker.py limpar  <central> <dump_dir> <doc_id> [--executar]   arquivos exclusivos da peça excluída
   fluxo_worker.py migrar  <central> <dump_dir> [--posts posts.json]    cria fluxo/<id> para peças antigas
   fluxo_worker.py zoho-hora <central> <acao.json>                     troca só a hora de um post do Zoho (só quando o Deilson pedir)
+  fluxo_worker.py zoho-listar cunha <AAAA-MM-DD>                       posts agendados no Zoho dessa data em diante
+  fluxo_worker.py zoho-legenda cunha <acao.json>                      troca só as hashtags de um post agendado (5, regra 21/10)
   fluxo_worker.py midia-cunha cunha <doc> <atualizado> <arquivos...>   sobe a arte da Central para cunhalaw/<doc>/ (JPG)
 
 dump_dir contém pecas/*.json e fluxo/*.json (ArtifactData list com out_dir).
@@ -847,6 +849,83 @@ def zoho_hora(central, acao_path):
     return {"ok": False, "msg": f"Zoho não confirmou a troca de hora (HTTP {code}): {str(js)[:200]}",
             "evento": ["falha", f"{a['doc']}: não consegui mudar a hora no Zoho de {a['de']} para {a['para']}; ajuste à mão"]}
 
+HASHTAGS_FIM = ["#imigracaoeua", "#cunhalaw"]
+
+def cinco_hashtags(texto, tags=None):
+    """Regra do Deilson (21/10/2026, limite do Instagram desde 18/12/2025): exatamente 5 hashtags, as do tema
+    primeiro, fechando com #imigracaoeua #cunhalaw. Sem `tags`, mantém as 3 primeiras do tema na ordem em que estão.
+    Só a linha (ou linhas) de hashtags do fim da legenda muda; o resto do texto fica igual."""
+    linhas = texto.rstrip("\n").split("\n")
+    fim = len(linhas)
+    while fim > 0 and linhas[fim - 1].strip() and all(w.startswith("#") for w in linhas[fim - 1].split()):
+        fim -= 1
+    atuais = [w for l in linhas[fim:] for w in l.split()]
+    if not atuais:
+        return None, "a legenda não termina com hashtags"
+    if tags is None:
+        tema = []
+        for t in atuais:
+            if t.lower() not in HASHTAGS_FIM and t.lower() not in [x.lower() for x in tema]:
+                tema.append(t)
+        tags = tema[:3] + HASHTAGS_FIM
+    if len(tags) != 5 or [t.lower() for t in tags[-2:]] != HASHTAGS_FIM:
+        return None, f"hashtags fora da regra: {' '.join(tags)}"
+    return "\n".join(linhas[:fim] + [" ".join(tags)]), None
+
+def zoho_listar(central, desde):
+    """Lista os posts agendados no Zoho com data (Brasília) >= desde (AAAA-MM-DD): id, hora, redes e hashtags."""
+    z = CFG["centrais"][central]["zoho"]
+    tok = zoho_token(z)
+    lista = zoho_agendados(z, tok)
+    if lista is None:
+        return {"ok": False, "msg": "Zoho não devolveu a lista completa"}
+    out = []
+    for p in lista:
+        st = int(p.get("schedule_time") or 0)
+        q = dt.datetime.fromtimestamp(st / 1000, SP).strftime("%Y-%m-%dT%H:%M") if st else ""
+        if q[:10] < desde:
+            continue
+        pid = str(p.get("post_id") or p.get("id") or "")
+        code, js = zoho_req(z, tok, "GET", f"/posts/schedules/{pid}")
+        d = (js or {}).get("data") if code == 200 else None
+        msgs = (d or {}).get("messages") or []
+        txt = (msgs[0].get("message") if msgs else "") or ""
+        out.append({"post_id": pid, "quando": q, "redes": [ch.get("network") for m in msgs for ch in (m.get("channels") or [])],
+                    "midias": sum(len(m.get("medias") or []) for m in msgs), "titulo": txt.split("\n")[0][:80], "hashtags": [w for w in txt.split() if w.startswith("#")]})
+    return {"ok": True, "posts": sorted(out, key=lambda x: x["quando"])}
+
+def zoho_legenda(central, acao_path):
+    """Troca só as hashtags da legenda de um post agendado (PUT): mesma hora, imagens e redes. Confere lendo de volta.
+    acao.json: {"post_id": ..., "hashtags": [5 tags] (opcional; sem elas, corta pela regra de cinco_hashtags)}."""
+    z = CFG["centrais"][central]["zoho"]
+    a = json.load(open(acao_path))
+    tok = zoho_token(z)
+    code, js = zoho_req(z, tok, "GET", f"/posts/schedules/{a['post_id']}")
+    d = (js or {}).get("data") if code == 200 else None
+    if not d:
+        return {"ok": False, "msg": f"post {a['post_id']} não encontrado no Zoho (HTTP {code}); nada mudou"}
+    st = int(d.get("schedule_time") or 0)
+    msgs, novos = [], []
+    for m in d.get("messages") or []:
+        novo, erro = cinco_hashtags(m.get("message") or "", a.get("hashtags"))
+        if erro:
+            return {"ok": False, "msg": f"post {a['post_id']}: {erro}; nada mudou"}
+        novos.append(novo)
+        msgs.append({"message": novo, "has_media": m.get("has_media") or "image",
+                     "medias": [{k: v for k, v in md.items() if k != "preview_url"} for md in (m.get("medias") or [])],
+                     "channels": [{"network": ch["network"], "brand_id": ch["brand_id"]} for ch in (m.get("channels") or [])]})
+    if all(n == (m.get("message") or "") for n, m in zip(novos, d.get("messages") or [])):
+        return {"ok": True, "msg": "já estava com as 5 hashtags", "post_id": a["post_id"], "hashtags": novos[0].split("\n")[-1]}
+    code, js = zoho_req(z, tok, "PUT", f"/posts/schedules/{a['post_id']}", {"post": {"type": "schedule", "schedule_time": st, "messages": msgs}})
+    code2, js2 = zoho_req(z, tok, "GET", f"/posts/schedules/{a['post_id']}")
+    d2 = (js2 or {}).get("data") if code2 == 200 else {}
+    lidos = [m.get("message") for m in (d2 or {}).get("messages") or []]
+    ok = int((d2 or {}).get("schedule_time") or 0) == st and lidos == novos
+    q = dt.datetime.fromtimestamp(st / 1000, SP).strftime("%Y-%m-%dT%H:%M")
+    return {"ok": ok, "post_id": a["post_id"], "quando": q, "hashtags": novos[0].split("\n")[-1],
+            "redes": [ch.get("network") for m in (d2 or {}).get("messages") or [] for ch in (m.get("channels") or [])],
+            "msg": "" if ok else f"Zoho não confirmou a troca (HTTP {code}): {str(js)[:200]}"}
+
 def zoho_criar(central, acao_path):
     """Executa uma ação zoho_criar (depois da trava gravada pela rotina). Imprime o resultado para gravar em plat."""
     c = CFG["centrais"][central]
@@ -1187,6 +1266,12 @@ def main():
         r = plano(central, dump, opt.get("posts"), opt.get("sem-conexao"))
     elif cmd == "zoho-criar":
         r = zoho_criar(central, dump)
+    elif cmd == "zoho-listar":
+        # zoho-listar cunha <desde AAAA-MM-DD>
+        r = zoho_listar(central, dump)
+    elif cmd == "zoho-legenda":
+        # zoho-legenda cunha <acao.json>
+        r = zoho_legenda(central, dump)
     elif cmd == "zoho-hora":
         r = zoho_hora(central, dump)
     elif cmd == "publicar-midia":
