@@ -10,7 +10,8 @@ Uso:
   fluxo_worker.py midia   <central> <dump_dir> <doc_id>          copia a mídia da peça para o Drive
   fluxo_worker.py limpar  <central> <dump_dir> <doc_id> [--executar]   arquivos exclusivos da peça excluída
   fluxo_worker.py migrar  <central> <dump_dir> [--posts posts.json]    cria fluxo/<id> para peças antigas
-  fluxo_worker.py zoho-hora <central> <acao.json>                     troca só a hora de um post do Zoho para a da Central
+  fluxo_worker.py zoho-hora <central> <acao.json>                     troca só a hora de um post do Zoho (só quando o Deilson pedir)
+  fluxo_worker.py midia-cunha cunha <doc> <atualizado> <arquivos...>   sobe a arte da Central para cunhalaw/<doc>/ (JPG)
 
 dump_dir contém pecas/*.json e fluxo/*.json (ArtifactData list com out_dir).
 posts.json é a resposta crua de getScheduledPosts do Metricool ({"data":[...]}) ou a lista.
@@ -565,6 +566,14 @@ def zoho_achar(agendados, quando, texto, usados, rede_z):
         return None, "há post no mesmo horário e texto, mas a lista do Zoho não diz a rede"
     return None, None
 
+def cunha_midia_acao(doc, p):
+    """Ação para a fila subir a arte da versão atual da Central para cunhalaw/<doc>/ (JPG + versao.txt = "atualizado").
+    Arte nova fica nos assets da Central (pecas.arte[].id); a antiga, nos arquivos exp/<doc>/NN.png."""
+    n = len(p.get("slides") or []) or 1
+    arte = [a.get("id") for a in (p.get("arte") or []) if a and a.get("id")]
+    return {"tipo": "cunha_midia", "doc": doc, "atualizado": p.get("atualizado") or "",
+            "assets": arte if len(arte) == n else [], "arquivos": [] if len(arte) == n else [f"exp/{doc}/{i:02d}.png" for i in range(1, n + 1)]}
+
 def limite_semana(hoje=None):
     """Último dia que o "Pode postar" agenda na hora: o domingo da semana atual. De sexta em diante, a semana
     seguinte já foi liberada pela rodada de sexta, então vale o domingo seguinte (regra do Deilson, 21/10/2026)."""
@@ -579,6 +588,7 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
     nome = c["plataforma_nome"]
     postado = set(os.path.basename(f)[:-5] for f in glob.glob(os.path.join(dump, "postado", "*.json")))
     marcas, acoes, avisos = [], [], []
+    midia_doc = set()
     zl = {}   # lista de agendamentos do Zoho, buscada uma vez e só se algum envio ficou incerto
     usados_z = {str((e.get("ext") or {}).get("id")) for f in fluxo.values() for e in (f.get("plat") or {}).values() if e and (e.get("ext") or {}).get("id")}
     try:
@@ -714,7 +724,12 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
                 med = zoho_midia(c, doc, p)
                 if not med:
                     if e0.get("st") != "aguardando_midia":
-                        patch[r] = plat_entry("aguardando_midia", quando=q, rev=rev, aut=aut["id"], desde=now_iso(), erro="Imagens desta versão ainda não estão no repositório (a rotina de imagens prepara).")
+                        patch[r] = plat_entry("aguardando_midia", quando=q, rev=rev, aut=aut["id"], desde=now_iso(), erro="Subindo as imagens desta versão; o agendamento sai logo em seguida.")
+                    # Regra do Deilson (21/10/2026): nada espera rodada. A própria fila sobe a imagem da Central agora
+                    # e roda o plano de novo, em vez de esperar a rotina de imagens.
+                    if doc not in midia_doc:
+                        midia_doc.add(doc)
+                        acoes.append(cunha_midia_acao(doc, p))
                     continue
                 msgs = [{"message": texto, "has_media": "image", "medias": med,
                          "channels": [{"network": z["redes"].get(r, r), "brand_id": z["brand_id"]}]}]
@@ -756,7 +771,7 @@ def hora_central(c, p):
 def zoho_conferir_horarios(c, pecas, fluxo, agendados, usados_z, avisos):
     """Posts agendados no Zoho fora do fluxo da Central (feitos à mão ou antes da Central) não têm hora conferida pelo
     passo 1. Aqui cada um é ligado à sua peça pelo texto e, se o horário não bate com a Central (mesma data), vira
-    a ação zoho_hora, que só troca a hora (PUT). Data diferente, peça sem hora ou texto ambíguo: só aviso, nada muda.
+    aviso (desde 21/10/2026 nada muda sozinho no Zoho). Data diferente, peça sem hora ou texto ambíguo: só aviso.
     Origem: 16/10/2026 posts agendados com data sem hora saíram à 00:00 de Brasília."""
     acoes = []
     chaves = {}
@@ -797,8 +812,9 @@ def zoho_conferir_horarios(c, pecas, fluxo, agendados, usados_z, avisos):
         if q_dt(q) <= AGORA + dt.timedelta(minutes=15):
             avisos.append(f"{doc}: horário da Central ({q.replace('T', ' ')}) já passou; o post continua em {de.replace('T', ' ')}.")
             continue
-        acoes.append({"tipo": "zoho_hora", "doc": doc, "post_id": pid, "de": de, "para": q,
-                      "schedule_time": int(q_dt(q).timestamp() * 1000)})
+        # Regra do Deilson (21/10/2026, item 8 do Fluxo): o que já está agendado no Zoho fica como está; ninguém muda
+        # hora por conta própria. A divergência só vira aviso (zoho-hora continua existindo para quando ele pedir).
+        avisos.append(f"{doc}: {c['plataforma_nome']} em {de.replace('T', ' ')} e Central em {q.replace('T', ' ')} (Brasília); nada foi mudado (regra: o que está no {c['plataforma_nome']} fica como está).")
     return acoes
 
 def zoho_hora(central, acao_path):
@@ -960,7 +976,7 @@ def midia(central, dump, doc):
     base = f"https://raw.githubusercontent.com/{repo}/{m.get('branch') or 'main'}/"
     return {"ok": True, "urls": [base + x.replace(" ", "%20") for x in rel], "locais": locais, "repo_paths": rel}
 
-def publicar_midia(central, rev, doc, arquivos):
+def publicar_midia(central, rev, doc, arquivos, versao=None, jpg=False):
     """Na nuvem: copia os arquivos finais da peça para o repositório (pasta <central>/<doc>/NN.ext), grava versao.txt,
     faz commit e push e devolve as URLs públicas (raw). Roda dentro do checkout do posts-claude."""
     c = CFG["centrais"][central]
@@ -975,10 +991,16 @@ def publicar_midia(central, rev, doc, arquivos):
     os.makedirs(destino, exist_ok=True)
     rel = []
     for i, p in enumerate(arquivos, 1):
-        nome = f"{i:02d}{os.path.splitext(p)[1].lower() or '.png'}"
-        shutil.copy2(p, os.path.join(destino, nome))
+        if jpg:  # Zoho (Cunha) recebe JPEG
+            from PIL import Image
+            nome = f"{i:02d}.jpg"
+            Image.open(p).convert("RGB").save(os.path.join(destino, nome), "JPEG", quality=90)
+        else:
+            nome = f"{i:02d}{os.path.splitext(p)[1].lower() or '.png'}"
+            shutil.copy2(p, os.path.join(destino, nome))
         rel.append(os.path.join(pasta, nome))
-    open(os.path.join(destino, "versao.txt"), "w").write(f"rev {rev}\n")
+    # Cunha: versao.txt = campo "atualizado" da peça (é o que zoho_midia confere antes de agendar)
+    open(os.path.join(destino, "versao.txt"), "w").write(versao if versao is not None else f"rev {rev}\n")
     g = lambda *a: subprocess.run(["git", "-C", clone] + list(a), capture_output=True, text=True)
     g("add", "-A", "--", pasta)
     if g("diff", "--cached", "--quiet").returncode != 0:
@@ -1164,6 +1186,9 @@ def main():
     elif cmd == "publicar-midia":
         # publicar-midia <central> <rev> <doc> arquivo1 arquivo2 ...
         r = publicar_midia(central, int(dump), rest[0], rest[1:])
+    elif cmd == "midia-cunha":
+        # midia-cunha cunha <doc> <atualizado> arquivo1 arquivo2 ...   (da raiz do repositório)
+        r = publicar_midia(central, 0, dump, rest[1:], versao=rest[0], jpg=True)
     elif cmd == "midia":
         r = midia(central, dump, rest[0])
     elif cmd == "limpar":

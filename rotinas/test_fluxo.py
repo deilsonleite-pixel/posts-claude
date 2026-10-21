@@ -192,7 +192,8 @@ _d = __import__("datetime")
 ok("Semana: terça 20/10 agenda até domingo 25/10; sexta 23/10 já vale até 01/11",
    _LS(_d.datetime(2026, 10, 20, 12, tzinfo=fw.SP)) == "2026-10-25" and _LS(_d.datetime(2026, 10, 23, 12, tzinfo=fw.SP)) == "2026-11-01" and _LS(_d.datetime(2026, 10, 25, 12, tzinfo=fw.SP)) == "2026-11-01", {})
 r = zplano({"c": {"aprov": APR, "aut": A}}, PZ, lambda p: (200, {}), midia=False)
-ok("Zoho: sem imagem da versão, não envia (aguarda mídia)", not r["acoes"] and pz(r)["st"] == "aguardando_midia", r)
+ok("Zoho: sem imagem da versão, não cria post e pede a subida da imagem na hora (nada espera rodada)",
+   [a["tipo"] for a in r["acoes"]] == ["cunha_midia"] and r["acoes"][0]["doc"] == "c" and pz(r)["st"] == "aguardando_midia", r)
 pl = {"instagram": {"st": "enviado", "aut": "A1", "ext": {"id": "99"}, "quando": FUT, "rev": 1}}
 r = zplano({"c": {"aprov": APR, "aut": A, "plat": pl}}, PZ, lambda p: (200, {"data": [{"network": "instagram", "status": "scheduled"}]}))
 ok("Zoho: status 'scheduled' na API vira Agendado", pz(r)["st"] == "agendado" and not r["acoes"], r)
@@ -293,9 +294,10 @@ LEG = "Legenda da peça com texto longo o bastante para identificar o post no Zo
 PH = {"h": {"tipo": "post", "rev": 1, "data": "2026-12-02", "hora": "12h", "legenda": LEG}}
 ag = [{"post_id": "900", "schedule_time": FUTMS("2026-12-02T00:00"), "messages": [{"message": "TITULO\n" + LEG}]},
       {"post_id": "901", "schedule_time": FUTMS("2026-12-02T08:00"), "messages": [{"message": "Reel sem peça na Central"}]}]
-r = fw2.zoho_conferir_horarios(fw2.CFG["centrais"]["cunha"], PH, {"h": {"aprov": APR}}, ag, set(), [])
-ok("Zoho: post à meia-noite volta para a hora da Central (mesma data); reel sem peça não é tocado",
-   [(a["tipo"], a["post_id"], a["para"]) for a in r] == [("zoho_hora", "900", "2026-12-02T14:00")], r)
+av = []
+r = fw2.zoho_conferir_horarios(fw2.CFG["centrais"]["cunha"], PH, {"h": {"aprov": APR}}, ag, set(), av)
+ok("Zoho: hora diferente da Central só avisa, nunca muda o que já está agendado (regra 8, 21/10); reel sem peça não é tocado",
+   not r and len(av) == 1 and "900" not in av[0] and "h:" in av[0], (r, av))
 av = []
 r = fw2.zoho_conferir_horarios(fw2.CFG["centrais"]["cunha"], PH, {"h": {"aprov": APR}}, [dict(ag[0], schedule_time=FUTMS("2026-12-03T14:00"))], set(), av)
 ok("Zoho: data diferente da Central só gera aviso", not r and av, (r, av))
