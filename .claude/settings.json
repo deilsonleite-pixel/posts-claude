@@ -1,0 +1,1 @@
+{"permissions":{"allow":["Bash(python3 rotinas/fluxo_worker.py preparar *)","Bash(python3 rotinas/fluxo_worker.py plano *)","Bash(python3 rotinas/fluxo_worker.py zoho-criar *)","Bash(python3 rotinas/fluxo_worker.py midia-cunha *)","Bash(git push *)","Artifact","ArtifactData","ArtifactComments"]}}
