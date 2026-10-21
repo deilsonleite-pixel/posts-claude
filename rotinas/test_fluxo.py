@@ -161,6 +161,33 @@ _pl = next((m["patch"]["plat"] for m in r["marcas"] if m["patch"].get("plat")), 
 ok("Zoho: post igual já no Zoho (IG+FB juntos, feito à mão) é adotado nas duas redes, sem criar duplicado",
    not r["acoes"] and all(_pl.get(x, {}).get("ext", {}).get("id") == "777" for x in ("instagram", "facebook")), r)
 fw.zoho_agendados = _ZA
+# tentativas até agendar (Deilson 21/10/2026)
+import importlib
+m2 = importlib.reload(fw) if False else fw
+_req, _tk, _ag, _sl = fw.zoho_req, fw.zoho_token, fw.zoho_agendados, fw.time.sleep
+fw.time.sleep = lambda s: None
+fw.zoho_token = lambda z, renovar=False: "T"
+_ac = {"doc": "x", "redes": ["instagram"], "quando": FUT, "aut": "a1", "esperado": {"rev": 1}, "claim": {"plat": {"instagram": {"tent": 1}}},
+       "corpo": {"post": {"type": "schedule", "schedule_time": 1, "messages": [{"message": "Texto X", "channels": [{"network": "instagram"}]}]}}}
+_af = os.path.join(tempfile.mkdtemp(), "a.json"); json.dump(_ac, open(_af, "w"))
+_seq = [(503, {}), (429, {}), (200, {"data": [{"success": True, "post_id": "901"}]})]
+fw.zoho_req = lambda z, tok, m, p, b=None: _seq.pop(0)
+fw.zoho_agendados = lambda z, tok: []
+r = fw.zoho_criar("cunha", _af)
+ok("Zoho: falha temporária (503, 429) tenta de novo até agendar", r.get("ok") and r["plat"]["instagram"]["ext"]["id"] == "901" and not _seq, r)
+_seq = [(0, {})]
+fw.zoho_agendados = lambda z, tok: [{"post_id": "902", "schedule_time": int(fw.q_dt(FUT).timestamp() * 1000), "messages": [{"message": "Texto X", "channels": [{"network": "instagram"}]}]}]
+r = fw.zoho_criar("cunha", _af)
+ok("Zoho: sem resposta, mas o post já foi criado -> adota, não duplica", r.get("ok") and r["plat"]["instagram"]["ext"]["id"] == "902" and not _seq, r)
+fw.zoho_req = lambda z, tok, m, p, b=None: (400, {"message": "imagem recusada"})
+r = fw.zoho_criar("cunha", _af)
+ok("Zoho: recusa definitiva grava FALHA NO AGENDAMENTO e pede aviso ao Deilson", not r["ok"] and r.get("avisar") and "FALHA NO AGENDAMENTO" in r["plat"]["instagram"]["erro"] and "imagem recusada" in r["aviso"], r)
+fw.zoho_req = lambda z, tok, m, p, b=None: (503, {})
+fw.zoho_agendados = lambda z, tok: []
+r = fw.zoho_criar("cunha", _af)
+ok("Zoho: sem resposta em todas as tentativas -> incerto e aviso", r.get("incerto") and r.get("avisar") and r.get("aviso"), r)
+fw.zoho_req, fw.zoho_token, fw.zoho_agendados, fw.time.sleep = _req, _tk, _ag, _sl
+
 _d = __import__("datetime")
 ok("Semana: terça 20/10 agenda até domingo 25/10; sexta 23/10 já vale até 01/11",
    _LS(_d.datetime(2026, 10, 20, 12, tzinfo=fw.SP)) == "2026-10-25" and _LS(_d.datetime(2026, 10, 23, 12, tzinfo=fw.SP)) == "2026-11-01" and _LS(_d.datetime(2026, 10, 25, 12, tzinfo=fw.SP)) == "2026-11-01", {})

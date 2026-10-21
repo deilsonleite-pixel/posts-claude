@@ -16,7 +16,7 @@ dump_dir contém pecas/*.json e fluxo/*.json (ArtifactData list com out_dir).
 posts.json é a resposta crua de getScheduledPosts do Metricool ({"data":[...]}) ou a lista.
 Datas: tudo em America/Sao_Paulo ("AAAA-MM-DDTHH:MM").
 """
-import json, os, re, sys, glob, shutil, subprocess, unicodedata, datetime as dt
+import json, os, re, sys, glob, shutil, subprocess, time, unicodedata, datetime as dt
 from zoneinfo import ZoneInfo
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
@@ -24,6 +24,8 @@ CFG = json.load(open(os.path.join(AQUI, "config.json")) if os.path.exists(os.pat
 SP = ZoneInfo("America/Sao_Paulo")
 AGORA = dt.datetime.now(SP)
 MAX_TENT = 3
+ZOHO_ESPERAS = (10, 30, 60, 120, 300)   # segundos entre tentativas de falha temporária (cerca de 9 min no total)
+ZOHO_TEMPORARIO = (0, 408, 429, 500, 502, 503, 504)
 ESPERA_ENVIO_MIN = 20          # "enviando" mais velho que isso = resultado incerto: consultar antes de repetir
 SYNC_REFRESH_H = 6             # reescreve "sync" de um agendado confirmado no máximo a cada 6 h
 
@@ -830,24 +832,44 @@ def zoho_criar(central, acao_path):
     a = json.load(open(acao_path))
     tok = zoho_token(z)
     endpoint = a.get("endpoint") or "/posts/schedules"   # /posts/publish = Publicar agora (peça urgente)
-    code, js = zoho_req(z, tok, "POST", endpoint, a["corpo"])
-    if code == 401:  # token guardado foi invalidado: o post não foi criado; pede um novo e tenta uma vez
-        tok = zoho_token(z, renovar=True)
+    r0 = a["redes"][0]
+    msg0 = ((a["corpo"].get("post") or {}).get("messages") or [{}])[0]
+    rede_z = ((msg0.get("channels") or [{}])[0]).get("network") or r0
+    # Regra do Deilson (21/10/2026): "Pode postar" tenta até agendar. Falha temporária (rede, tempo esgotado,
+    # 5xx, 429) repete com espera crescente; antes de repetir uma sem resposta, confere se o post já foi criado.
+    for n in range(len(ZOHO_ESPERAS) + 1):
         code, js = zoho_req(z, tok, "POST", endpoint, a["corpo"])
+        if code == 401:  # token guardado foi invalidado: o post não foi criado; pede um novo e tenta uma vez
+            tok = zoho_token(z, renovar=True)
+            code, js = zoho_req(z, tok, "POST", endpoint, a["corpo"])
+        if code not in ZOHO_TEMPORARIO or n == len(ZOHO_ESPERAS):
+            break
+        time.sleep(ZOHO_ESPERAS[n])
+        if code != 429 and not a.get("agora"):
+            lista = zoho_agendados(z, tok)
+            achado, _ = zoho_achar(lista or [], a["quando"], msg0.get("message") or "", set(), rede_z)
+            if achado:
+                code, js = 200, {"data": [{"success": True, "post_id": achado["post_id"]}]}
+                break
     item = ((js.get("data") or [{}]) or [{}])[0] if isinstance(js, dict) else {}
     ok = code == 200 and item.get("success") and item.get("post_id")
-    r0 = a["redes"][0]
     if ok:
         e = plat_entry("enviado", ext={"id": str(item["post_id"]), "url": "https://social.zoho.com"}, quando=a["quando"], rev=a["esperado"]["rev"], aut=a["aut"], desde=now_iso(), tent=a["claim"]["plat"][r0]["tent"])
         if item.get("is_approval_needed"):
             e["erro"] = "O Zoho marcou o post como dependente de aprovação interna: aprove no Zoho para ele ficar agendado."
         modo = "publicado agora (urgente)" if a.get("agora") else a["quando"]
         return {"ok": True, "plat": {r: e for r in a["redes"]}, "evento": ["enviado", f"{', '.join(a['redes'])} · {modo} · Zoho post {item['post_id']}"]}
-    if code in (0, 500, 502, 503, 504):
-        return {"ok": False, "incerto": True, "msg": f"Zoho não respondeu (HTTP {code}). Deixe 'enviando'; a próxima rodada confere antes de reenviar."}
+    if code in ZOHO_TEMPORARIO:
+        return {"ok": False, "incerto": True, "avisar": True,
+                "aviso": f"{a['doc']} · {', '.join(a['redes'])} · {a['quando']}: o Zoho não respondeu depois de {len(ZOHO_ESPERAS) + 1} tentativas (HTTP {code}). Rode a fila da cunha de novo; ela confere no Zoho antes de reenviar, sem duplicar.",
+                "msg": f"Zoho sem resposta depois de {len(ZOHO_ESPERAS) + 1} tentativas (HTTP {code}). Deixe 'enviando'; a próxima rodada confere antes de reenviar."}
+    # falha que repetir não resolve (credencial/conexão vencida, mídia ou legenda recusada): a Central mostra FALHA NO AGENDAMENTO
     msg = item.get("message") or js.get("message") or js.get("erro") or str(js)[:200]
-    e = plat_entry("falha", quando=a["quando"], rev=a["esperado"]["rev"], aut=a["aut"], desde=now_iso(), erro=f"Zoho recusou: {msg}", erro_cod=f"http_{code}", tent=a["claim"]["plat"][r0]["tent"])
-    return {"ok": False, "plat": {r: e for r in a["redes"]}, "evento": ["falha", f"Zoho recusou: {msg}"]}
+    if code in (401, 403):
+        msg = f"conexão com o Zoho recusada ({msg}). Confira as credenciais ZOHO_* do ambiente e a conexão do Instagram/Facebook no Zoho."
+    e = plat_entry("falha", quando=a["quando"], rev=a["esperado"]["rev"], aut=a["aut"], desde=now_iso(), erro=f"FALHA NO AGENDAMENTO. Zoho recusou: {msg}", erro_cod=f"http_{code}", tent=a["claim"]["plat"][r0]["tent"])
+    return {"ok": False, "avisar": True, "aviso": f"FALHA NO AGENDAMENTO: {a['doc']} · {', '.join(a['redes'])} · {a['quando']}. Zoho recusou: {msg}",
+            "plat": {r: e for r in a["redes"]}, "evento": ["falha", f"FALHA NO AGENDAMENTO. Zoho recusou: {msg}"]}
 
 # ---------------- mídia ----------------
 def slug_of(doc):

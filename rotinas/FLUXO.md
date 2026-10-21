@@ -29,3 +29,8 @@ Quem pede "para hoje", "urgente" ou "publicar agora" (em qualquer thread, chat o
 6. Quem executa o "Pode postar" é o script `fluxo_worker.py` (FILA.md): ele decide sozinho entre Publicar agora (peça urgente) e agendar (as outras).
 7. Horário da peça = Orlando; a Central converte para Brasília. Confira o dia da semana no calendário antes de dar data.
 8. Status e aprovação vivem só na Central.
+
+## Gatilho e falhas (Deilson, 21/10/2026)
+
+- Não existe rotina de hora em hora. "Pode postar" de peça da semana atual (até domingo) é a ordem: a Central avisa o coordenador, que manda "PODE POSTAR <id>" para a thread com ZOHO_* ("Posts fixados de credibilidade"), e ela roda FILA.md só da cunha (preparar, plano, zoho-criar). Semana seguinte: rodada de sexta. O que já está no Zoho fica como está.
+- Tentar até agendar: falha temporária repete sozinha (fluxo_worker.py). Falha que repetir não resolve vira "FALHA NO AGENDAMENTO" na Central E aviso imediato ao coordenador, que posta no chat do Deilson (peça, data/hora, motivo, o que fazer).
