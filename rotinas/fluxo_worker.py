@@ -57,6 +57,12 @@ def load_dir(d):
             out[os.path.basename(f)[:-5]] = json.load(open(f))
         except Exception:
             pass
+    # Peças publicadas direto pela API do Instagram (16/10) gravaram plat.<rede>.ext como o link do post (texto)
+    for d_ in out.values():
+        plat = d_.get("plat") if isinstance(d_, dict) else None
+        for e in (plat or {}).values() if isinstance(plat, dict) else ():
+            if isinstance(e, dict) and isinstance(e.get("ext"), str):
+                e["ext"] = {"url": e["ext"]}
     return out
 
 def load_posts(path):
