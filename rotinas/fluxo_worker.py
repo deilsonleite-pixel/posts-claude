@@ -563,6 +563,15 @@ def zoho_achar(agendados, quando, texto, usados, rede_z):
         return None, "há post no mesmo horário e texto, mas a lista do Zoho não diz a rede"
     return None, None
 
+def limite_semana(hoje=None):
+    """Último dia que o "Pode postar" agenda na hora: o domingo da semana atual. De sexta em diante, a semana
+    seguinte já foi liberada pela rodada de sexta, então vale o domingo seguinte (regra do Deilson, 21/10/2026)."""
+    d = (hoje or AGORA).date()
+    fim = d + dt.timedelta(days=6 - d.weekday())
+    if d.weekday() >= 4:
+        fim += dt.timedelta(days=7)
+    return fim.strftime("%Y-%m-%d")
+
 def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
     z = c["zoho"]
     nome = c["plataforma_nome"]
@@ -627,10 +636,12 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
                     want.pop(r, None)
         # 2) autorizado e ainda sem agendamento no Zoho
         if want and p:
-            data = p.get("data") or ""
+            # peça sem data (ex.: post fixado): vale a data do "Pode postar"
+            data = p.get("data") or min(want.values())[:10]
             # URGENTE (regra do Deilson, 16/10/2026): peça marcada "urgente" com Pode postar é publicada NA HORA
             # (Publicar agora: POST /posts/publish, sem schedule_time). Não mexe em nada que já está programado.
-            urgente = bool(p.get("urgente"))
+            urgente = bool(p.get("urgente")) and data == AGORA.strftime("%Y-%m-%d")
+            adot_doc = set()
             texto = (aut.get("snap") or {}).get("texto") or ((p.get("legenda") or "") + ("\n\n" + p["hashtags"] if p.get("hashtags") else ""))
             for r, q in sorted(want.items()):
                 e0 = plat.get(r) or {}
@@ -638,7 +649,11 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
                     if e0.get("st") != "concluido" or e0.get("aut") != aut["id"]:
                         patch[r] = plat_entry("concluido", quando=q, rev=rev, aut=aut["id"], sync=now_iso())
                     continue
-                if data <= c.get("zoho_ate", "") and doc not in (c.get("rotina_inclui") or []):
+                # semana seguinte ou depois: espera a rodada de sexta (regra do Deilson, 21/10/2026)
+                if not urgente and q[:10] > limite_semana():
+                    continue
+                # legado: só autorizações de antes da Central (até 15/10/2026); Pode postar novo sempre agenda
+                if data <= c.get("zoho_ate", "") and doc not in (c.get("rotina_inclui") or []) and (aut.get("em") or "") < "2026-10-16":
                     if e0.get("st") != "externo" or e0.get("aut") != aut["id"]:
                         patch[r] = plat_entry("externo", quando=q, rev=rev, aut=aut["id"], sync=now_iso(), erro=f"Agendado no {nome} pela equipe antes da Central; sem identificador para conferir.")
                     continue
@@ -675,6 +690,25 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
                         continue
                 if e0.get("st") == "falha" and e0.get("aut") == aut["id"]:
                     continue
+                # antes de criar: se o Zoho já tem post igual (mesma rede, hora e texto), adota em vez de duplicar
+                if not urgente and e0.get("st") != "enviando":
+                    if "l" not in zl:
+                        zl["l"] = zoho_agendados(z, tok)
+                    if zl["l"] is None:
+                        avisos.append(f"{doc} · {r}: lista de agendamentos do {nome} indisponível; não cria nesta rodada")
+                        continue
+                    # um post do Zoho pode ter IG e FB juntos (feito à mão): a mesma peça pode adotá-lo nas duas redes
+                    achado, duvida = zoho_achar(zl["l"], q, texto, usados_z - adot_doc, z["redes"].get(r, r))
+                    if duvida:
+                        avisos.append(f"{doc} · {r}: {duvida}; não cria (confira no {nome})")
+                        continue
+                    if achado:
+                        pid = str(achado["post_id"])
+                        usados_z.add(pid)
+                        adot_doc.add(pid)
+                        patch[r] = plat_entry("enviado", ext={"id": pid, "url": "https://social.zoho.com"}, quando=q, rev=rev, aut=aut["id"], desde=now_iso(), tent=0)
+                        marcas.append({"doc": doc, "patch": {}, "evento": ("enviado", f"{r} · {q} · já estava no {nome} (post {pid}); adotado, sem duplicar")})
+                        continue
                 med = zoho_midia(c, doc, p)
                 if not med:
                     if e0.get("st") != "aguardando_midia":

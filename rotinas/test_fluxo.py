@@ -118,7 +118,9 @@ import importlib.util
 spec = importlib.util.spec_from_file_location("fw", W); fw = importlib.util.module_from_spec(spec); spec.loader.exec_module(fw)
 fw.zoho_token = lambda z: "tok"
 FUTD = "2026-12-01"  # depois do período em que a equipe agendou direto no Zoho
-def zplano(fluxo, pecas, status_api, midia=True, postado=()):
+_LS = fw.limite_semana
+def zplano(fluxo, pecas, status_api, midia=True, postado=(), limite="2099-12-31"):
+    fw.limite_semana = lambda hoje=None: limite
     fw.zoho_req = lambda z, tok, m, path, body=None: status_api(path)
     fw.zoho_midia = lambda c, doc, p: ([{"file_path": "u", "name": "n", "type": "image", "format": "jpg", "size": 1, "width": 1080, "height": 1350}] if midia else None)
     d = tempfile.mkdtemp(); [os.makedirs(d + x) for x in ("/fluxo", "/pecas", "/postado")]
@@ -135,7 +137,8 @@ PZ = {"c": {"tipo": "post", "rev": 1, "data": FUTD, "slides": [{}], "atualizado"
 r = zplano({"c": {"aprov": APR, "aut": A}}, PZ, lambda p: (200, {}))
 ok("Zoho: Pode postar gera um agendamento com horário em ms e imagem do repositório", len(r["acoes"]) == 1 and r["acoes"][0]["tipo"] == "zoho_criar" and r["acoes"][0]["corpo"]["post"]["schedule_time"] > 0 and r["acoes"][0]["corpo"]["post"]["messages"][0]["channels"][0]["network"] == "instagram", r)
 # urgente (regra de 16/10/2026): Pode postar publica na hora, mesmo com o horário da peça já passado
-PU = {"c": dict(PZ["c"], urgente=True)}
+HOJE = fw.AGORA.strftime("%Y-%m-%d")
+PU = {"c": dict(PZ["c"], urgente=True, data=HOJE)}
 r = zplano({"c": {"aprov": APR, "aut": aut(redes=("instagram", "facebook"), q=PAST)}}, PU, lambda p: (200, {}))
 ok("Zoho: urgente com Pode postar vira Publicar agora (POST /posts/publish, sem schedule_time), IG e FB",
    len(r["acoes"]) == 2 and all(a["endpoint"] == "/posts/publish" and a["agora"] and a["corpo"]["post"]["type"] == "publish" and "schedule_time" not in a["corpo"]["post"] for a in r["acoes"]), r)
@@ -143,6 +146,24 @@ r = zplano({"c": {"aprov": APR, "aut": aut(redes=("instagram",), q=PAST)}}, PZ, 
 ok("Zoho: não urgente com horário passado continua sem sair (nada publica na hora)", not r["acoes"] and pz(r).get("erro_cod") == "horario_passou", r)
 r = zplano({"c": {"aprov": APR}}, PU, lambda p: (200, {}))
 ok("Zoho: urgente só aprovado, sem Pode postar, não publica", not r["acoes"], r)
+r = zplano({"c": {"aprov": APR, "aut": aut(redes=("instagram",), q=PAST)}}, {"c": dict(PZ["c"], urgente=True, data="2026-10-16")}, lambda p: (200, {}))
+ok("Zoho: urgente de outro dia não é publicado na hora", not r["acoes"], r)
+r = zplano({"c": {"aprov": APR, "aut": A}}, PZ, lambda p: (200, {}), limite="2000-01-01")
+ok("Zoho: Pode postar de semana seguinte espera a sexta (nada criado, nada gravado)", not r["acoes"] and not pz(r), r)
+r = zplano({"c": {"aprov": APR, "aut": A}}, {"c": dict(PZ["c"], data=None)}, lambda p: (200, {}))
+ok("Zoho: peça sem data (fixado) usa a data do Pode postar e é agendada", len(r["acoes"]) == 1 and r["acoes"][0]["tipo"] == "zoho_criar", r)
+_ZA = fw.zoho_agendados
+fw.zoho_agendados = lambda z, tok: [{"post_id": "777", "schedule_time": int(fw.q_dt(FUT).timestamp() * 1000),
+    "messages": [{"message": "Texto da peça já agendado à mão no Zoho, com IG e FB juntos.", "channels": [{"network": "instagram"}, {"network": "facebookpage"}]}]}]
+_A2 = aut(redes=("instagram", "facebook")); _A2["snap"] = dict(_A2.get("snap") or {}, texto="Texto da peça já agendado à mão no Zoho, com IG e FB juntos.")
+r = zplano({"c": {"aprov": APR, "aut": _A2}}, PZ, lambda p: (200, {}))
+_pl = next((m["patch"]["plat"] for m in r["marcas"] if m["patch"].get("plat")), {})
+ok("Zoho: post igual já no Zoho (IG+FB juntos, feito à mão) é adotado nas duas redes, sem criar duplicado",
+   not r["acoes"] and all(_pl.get(x, {}).get("ext", {}).get("id") == "777" for x in ("instagram", "facebook")), r)
+fw.zoho_agendados = _ZA
+_d = __import__("datetime")
+ok("Semana: terça 20/10 agenda até domingo 25/10; sexta 23/10 já vale até 01/11",
+   _LS(_d.datetime(2026, 10, 20, 12, tzinfo=fw.SP)) == "2026-10-25" and _LS(_d.datetime(2026, 10, 23, 12, tzinfo=fw.SP)) == "2026-11-01" and _LS(_d.datetime(2026, 10, 25, 12, tzinfo=fw.SP)) == "2026-11-01", {})
 r = zplano({"c": {"aprov": APR, "aut": A}}, PZ, lambda p: (200, {}), midia=False)
 ok("Zoho: sem imagem da versão, não envia (aguarda mídia)", not r["acoes"] and pz(r)["st"] == "aguardando_midia", r)
 pl = {"instagram": {"st": "enviado", "aut": "A1", "ext": {"id": "99"}, "quando": FUT, "rev": 1}}
@@ -154,8 +175,10 @@ r = zplano({"c": {"aprov": {"on": False, "rev": 1}, "plat": {"instagram": dict(p
 ok("Zoho: post sumiu depois do pedido = cancelamento confirmado", pz(r)["st"] == "cancelado", r)
 r = zplano({"c": {"aprov": APR, "aut": A, "plat": {"instagram": {"st": "enviando", "aut": "A1", "desde": iso(NOW), "tent": 1, "quando": FUT}}}}, PZ, lambda p: (200, {}))
 ok("Zoho: envio em andamento não é repetido", not r["acoes"], r)
-r = zplano({"c": {"aprov": APR, "aut": A}}, {"c": dict(PZ["c"], data="2026-10-19")}, lambda p: (200, {}))
-ok("Zoho: até 20/10 (agendado pela equipe) não envia de novo", not r["acoes"] and pz(r)["st"] == "externo", r)
+r = zplano({"c": {"aprov": APR, "aut": dict(A, em="2026-10-15T18:05:40Z")}}, {"c": dict(PZ["c"], data="2026-10-19")}, lambda p: (200, {}))
+ok("Zoho: até 20/10 (agendado pela equipe, autorização legada) não envia de novo", not r["acoes"] and pz(r)["st"] == "externo", r)
+r = zplano({"c": {"aprov": APR, "aut": A}}, {"c": dict(PZ["c"], data="2026-10-20")}, lambda p: (200, {}))
+ok("Zoho: Pode postar novo em peça até 20/10 agenda normalmente", len(r["acoes"]) == 1 and r["acoes"][0]["tipo"] == "zoho_criar", r)
 r = zplano({"c": {"aprov": APR, "aut": A, "plat": pl}}, PZ, lambda p: (200, {"data": [{"network": "instagram", "status": "unpublished", "error": {"code": 1, "message": "token expirado"}}]}))
 ok("Zoho: erro da rede aparece como Falha com a mensagem", pz(r)["st"] == "falha" and "token expirado" in pz(r)["erro"], r)
 r = zplano({"c": {"aprov": APR, "aut": A}}, {"c": dict(PZ["c"], data="2026-10-19")}, lambda p: (200, {}), postado=("p_c",))
