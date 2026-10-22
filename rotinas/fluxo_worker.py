@@ -926,6 +926,25 @@ def zoho_legenda(central, acao_path):
             "redes": [ch.get("network") for m in (d2 or {}).get("messages") or [] for ch in (m.get("channels") or [])],
             "msg": "" if ok else f"Zoho não confirmou a troca (HTTP {code}): {str(js)[:200]}"}
 
+def zoho_cancelar(central, post_id, copia_dir):
+    """Cancela um post agendado (DELETE /posts/schedules/{id}), regra 3 do Fluxo: alteração em peça agendada.
+    Antes guarda a cópia completa do post em <copia_dir>/<id>.json (dá para recriar igual) e depois confere que sumiu."""
+    z = CFG["centrais"][central]["zoho"]
+    tok = zoho_token(z)
+    code, js = zoho_req(z, tok, "GET", f"/posts/schedules/{post_id}")
+    d = (js or {}).get("data") if code == 200 else None
+    if not d:
+        return {"ok": False, "msg": f"post {post_id} não encontrado no Zoho (HTTP {code}); nada mudou"}
+    os.makedirs(copia_dir, exist_ok=True)
+    json.dump(d, open(os.path.join(copia_dir, f"{post_id}.json"), "w"), ensure_ascii=False, indent=1)
+    code, js = zoho_req(z, tok, "DELETE", f"/posts/schedules/{post_id}")
+    lista = zoho_agendados(z, tok)
+    ainda = lista is None or any(str(p.get("post_id") or p.get("id")) == str(post_id) for p in lista)
+    st = int(d.get("schedule_time") or 0)
+    return {"ok": not ainda, "post_id": post_id, "http": code, "resposta": str(js)[:300],
+            "quando": dt.datetime.fromtimestamp(st / 1000, SP).strftime("%Y-%m-%dT%H:%M") if st else "",
+            "msg": "" if not ainda else "o post continua na lista de agendados do Zoho"}
+
 def zoho_criar(central, acao_path):
     """Executa uma ação zoho_criar (depois da trava gravada pela rotina). Imprime o resultado para gravar em plat."""
     c = CFG["centrais"][central]
