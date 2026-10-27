@@ -582,6 +582,48 @@ def cunha_midia_acao(doc, p):
     return {"tipo": "cunha_midia", "doc": doc, "atualizado": p.get("atualizado") or "",
             "assets": arte if len(arte) == n else [], "arquivos": [] if len(arte) == n else [f"exp/{doc}/{i:02d}.png" for i in range(1, n + 1)]}
 
+# Legenda curta para X e Threads (regra do Deilson, 27/10/2026): limite em caracteres (o X conta emoji como 2).
+LIMITE_TEXTO = {"twitter": 270, "threads": 490}
+
+def _tam(t):
+    return len(t.encode("utf-16-le")) // 2
+
+def texto_curto(p, limite):
+    """pecas.legenda_curta se couber; senão, a legenda em parágrafos inteiros (nunca corta no meio): gancho,
+    aviso de conversa fictícia e aviso legal sempre que couberem, o corpo em ordem enquanto couber, sem a linha de CTA,
+    e 2 hashtags (a primeira do tema + #imigracaoeua)."""
+    lc = (p.get("legenda_curta") or "").strip()
+    if lc and _tam(lc) <= limite:
+        return lc
+    tags = (p.get("hashtags") or "").split()
+    tags = " ".join(dict.fromkeys(([tags[0]] if tags else []) + ["#imigracaoeua"]))
+    pars = [x.strip() for x in re.split(r"\n\s*\n", p.get("legenda") or "") if x.strip() and not x.strip().startswith("#")]
+    if not pars:
+        return tags
+    cta = lambda x: x.startswith(("📲", "Salve", "Salva", "Mande", "Marque", "Compartilhe"))
+    obrig = [0] + [i for i, x in enumerate(pars) if i and re.search(r"fictíci|Conteúdo informativo|não substitui", x)]
+    escolhidos = set()
+    def cabe(ids):
+        return _tam("\n\n".join([pars[i] for i in sorted(ids)] + [tags])) <= limite
+    for i in obrig:
+        if cabe(escolhidos | {i}):
+            escolhidos.add(i)
+    for i, x in enumerate(pars):   # corpo em ordem, sem pular parágrafo: para no primeiro que não cabe
+        if i in escolhidos or cta(x):
+            continue
+        if not cabe(escolhidos | {i}):
+            break
+        escolhidos.add(i)
+    if not escolhidos:  # gancho sozinho maior que o limite: corta no fim da última frase que cabe
+        frases = re.split(r"(?<=[.!?])\s+", pars[0])
+        out = ""
+        for fr in frases:
+            if _tam((out + " " + fr).strip() + "\n\n" + tags) > limite:
+                break
+            out = (out + " " + fr).strip()
+        return (out + "\n\n" + tags).strip()
+    return "\n\n".join([pars[i] for i in sorted(escolhidos)] + [tags])
+
 def limite_semana(hoje=None):
     """Último dia que o "Pode postar" agenda na hora: o domingo da semana atual. De sexta em diante, a semana
     seguinte já foi liberada pela rodada de sexta, então vale o domingo seguinte (regra do Deilson, 21/10/2026)."""
@@ -613,6 +655,21 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
         aut = None if exc else aut_ok(f, rev)
         plat = f.get("plat") or {}
         want = dict(aut["redes"]) if aut else {}
+        # Regra do Deilson (27/10/2026): post e carrossel vão também para as outras redes conectadas que aceitam
+        # o formato (X e Threads, com legenda curta), no mesmo horário do Instagram. YouTube e TikTok recusam imagem
+        # no Zoho; Google Meu Negócio e LinkedIn não entram. O X aceita até 4 imagens. Só vale para horário ainda
+        # por vir (ou urgente de hoje ainda não publicado): o que já saiu não é republicado.
+        if aut and p and p.get("tipo") in ("post", "carrossel"):
+            base_q = want.get("instagram") or want.get("facebook")
+            n_img = len(p.get("slides") or []) or 1
+            ig_fb_saiu = all((plat.get(r) or {}).get("st") == "concluido" for r in ("instagram", "facebook") if r in want)
+            vale = base_q and (q_dt(base_q) > AGORA + dt.timedelta(minutes=10)
+                               or (p.get("urgente") and (p.get("data") or base_q[:10]) == AGORA.strftime("%Y-%m-%d") and not ig_fb_saiu))
+            for r in c.get("redes_extras") or []:
+                if r in want or (r == "twitter" and n_img > 4):
+                    continue
+                if vale or (plat.get(r) or {}).get("aut") == aut["id"]:
+                    want[r] = base_q
         patch = {}
         # 1) o que já foi mandado ao Zoho: consultar o status de verdade
         vistos = {}
@@ -669,6 +726,7 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
             texto = (aut.get("snap") or {}).get("texto") or ((p.get("legenda") or "") + ("\n\n" + p["hashtags"] if p.get("hashtags") else ""))
             for r, q in sorted(want.items()):
                 e0 = plat.get(r) or {}
+                tx = texto_curto(p, LIMITE_TEXTO[r]) if r in LIMITE_TEXTO else texto
                 if "p_" + doc in postado:
                     if e0.get("st") != "concluido" or e0.get("aut") != aut["id"]:
                         patch[r] = plat_entry("concluido", quando=q, rev=rev, aut=aut["id"], sync=now_iso())
@@ -701,7 +759,7 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
                     if zl["l"] is None:
                         avisos.append(f"{doc} · {r}: lista de agendamentos do {nome} indisponível; não reenvia nesta rodada")
                         continue
-                    achado, duvida = zoho_achar(zl["l"], q, texto, usados_z, z["redes"].get(r, r))
+                    achado, duvida = zoho_achar(zl["l"], q, tx, usados_z, z["redes"].get(r, r))
                     if duvida:
                         avisos.append(f"{doc} · {r}: {duvida}; não reenvia (confira no {nome})")
                         continue
@@ -722,7 +780,7 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
                         avisos.append(f"{doc} · {r}: lista de agendamentos do {nome} indisponível; não cria nesta rodada")
                         continue
                     # um post do Zoho pode ter IG e FB juntos (feito à mão): a mesma peça pode adotá-lo nas duas redes
-                    achado, duvida = zoho_achar(zl["l"], q, texto, usados_z - adot_doc, z["redes"].get(r, r))
+                    achado, duvida = zoho_achar(zl["l"], q, tx, usados_z - adot_doc, z["redes"].get(r, r))
                     if duvida:
                         avisos.append(f"{doc} · {r}: {duvida}; não cria (confira no {nome})")
                         continue
@@ -743,7 +801,7 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
                         midia_doc.add(doc)
                         acoes.append(cunha_midia_acao(doc, p))
                     continue
-                msgs = [{"message": texto, "has_media": "image", "medias": med,
+                msgs = [{"message": tx, "has_media": "image", "medias": med,
                          "channels": [{"network": z["redes"].get(r, r), "brand_id": z["brand_id"]}]}]
                 if urgente:
                     corpo, endpoint = {"post": {"type": "publish", "messages": msgs}}, "/posts/publish"

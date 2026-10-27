@@ -119,8 +119,9 @@ spec = importlib.util.spec_from_file_location("fw", W); fw = importlib.util.modu
 fw.zoho_token = lambda z: "tok"
 FUTD = "2026-12-01"  # depois do período em que a equipe agendou direto no Zoho
 _LS = fw.limite_semana
-def zplano(fluxo, pecas, status_api, midia=True, postado=(), limite="2099-12-31"):
+def zplano(fluxo, pecas, status_api, midia=True, postado=(), limite="2099-12-31", extras=()):
     fw.limite_semana = lambda hoje=None: limite
+    fw.CFG["centrais"]["cunha"]["redes_extras"] = list(extras)
     fw.zoho_req = lambda z, tok, m, path, body=None: status_api(path)
     fw.zoho_midia = lambda c, doc, p: ([{"file_path": "u", "name": "n", "type": "image", "format": "jpg", "size": 1, "width": 1080, "height": 1350}] if midia else None)
     d = tempfile.mkdtemp(); [os.makedirs(d + x) for x in ("/fluxo", "/pecas", "/postado")]
@@ -152,6 +153,22 @@ r = zplano({"c": {"aprov": APR, "aut": A}}, PZ, lambda p: (200, {}), limite="200
 ok("Zoho: Pode postar de semana seguinte espera a sexta (nada criado, nada gravado)", not r["acoes"] and not pz(r), r)
 r = zplano({"c": {"aprov": APR, "aut": A}}, {"c": dict(PZ["c"], data=None)}, lambda p: (200, {}))
 ok("Zoho: peça sem data (fixado) usa a data do Pode postar e é agendada", len(r["acoes"]) == 1 and r["acoes"][0]["tipo"] == "zoho_criar", r)
+# X e Threads (regra do Deilson, 27/10/2026): mesmo horário do Instagram, legenda curta, X só até 4 imagens
+LEGX = "Vai morar nos EUA? Fale com quem entende de visto!\n\n" + "Corpo longo da legenda. " * 20 + "\n\nEsta conversa é fictícia e foi criada com humor.\n\n📲 Salve e mande para um amigo.\n\nConteúdo informativo. Cada caso migratório exige análise individual."
+PX = {"c": dict(PZ["c"], legenda=LEGX, hashtags="#vistoamericano #b #c #imigracaoeua #cunhalaw")}
+r = zplano({"c": {"aprov": APR, "aut": aut(redes=("instagram", "facebook"))}}, PX, lambda p: (200, {}), extras=("twitter", "threads"))
+_by = {a["redes"][0]: a for a in r["acoes"]}
+_tx = _by.get("twitter", {}).get("corpo", {}).get("post", {}).get("messages", [{}])[0].get("message", "")
+ok("Zoho: post vai também para X e Threads no horário do Instagram, com legenda curta (gancho, aviso de fictícia e aviso legal, sem CTA)",
+   set(_by) == {"instagram", "facebook", "twitter", "threads"} and _by["twitter"]["quando"] == FUT and _by["threads"]["corpo"]["post"]["messages"][0]["channels"][0]["network"] == "threadsbyig"
+   and fw._tam(_tx) <= 270 and _tx.startswith("Vai morar") and "fictícia" in _tx and "Conteúdo informativo" in _tx and "Salve" not in _tx
+   and _tx.endswith("#vistoamericano #imigracaoeua"), r)
+r = zplano({"c": {"aprov": APR, "aut": aut(redes=("instagram",))}}, {"c": dict(PX["c"], tipo="carrossel", slides=[{}] * 6)}, lambda p: (200, {}), extras=("twitter", "threads"))
+ok("Zoho: carrossel com mais de 4 imagens não vai para o X (vai para o Threads)", sorted(a["redes"][0] for a in r["acoes"]) == ["instagram", "threads"], r)
+r = zplano({"c": {"aprov": APR, "aut": aut(redes=("instagram",), q=PAST)}}, PX, lambda p: (200, {}), extras=("twitter", "threads"))
+ok("Zoho: peça de horário passado não é republicada no X/Threads", not any(a["redes"][0] in ("twitter", "threads") for a in r["acoes"]) and not any((m["patch"].get("plat") or {}).get("twitter") for m in r["marcas"]), r)
+r = zplano({"c": {"aprov": APR, "aut": aut(redes=("instagram",))}}, {"c": dict(PX["c"], tipo="reel")}, lambda p: (200, {}), extras=("twitter", "threads"))
+ok("Zoho: reel não vai para X/Threads", [a["redes"][0] for a in r["acoes"]] == ["instagram"], r)
 _ZA = fw.zoho_agendados
 fw.zoho_agendados = lambda z, tok: [{"post_id": "777", "schedule_time": int(fw.q_dt(FUT).timestamp() * 1000),
     "messages": [{"message": "Texto da peça já agendado à mão no Zoho, com IG e FB juntos.", "channels": [{"network": "instagram"}, {"network": "facebookpage"}]}]}]

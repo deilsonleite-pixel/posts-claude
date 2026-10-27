@@ -45,11 +45,15 @@
       "redes": {
         "instagram": "Instagram",
         "facebook": "Facebook",
-        "youtube": "YouTube"
+        "youtube": "YouTube",
+        "twitter": "X",
+        "threads": "Threads"
       },
       "redes_conectadas": [
         "instagram",
-        "facebook"
+        "facebook",
+        "twitter",
+        "threads"
       ],
       "padrao_redes": {
         "post": [
@@ -88,9 +92,15 @@
         "redes": {
           "instagram": "instagram",
           "facebook": "facebookpage",
-          "youtube": "youtube"
+          "youtube": "youtube",
+          "twitter": "twitter",
+          "threads": "threadsbyig"
         }
-      }
+      },
+      "redes_extras": [
+        "twitter",
+        "threads"
+      ]
     }
   }
 }
