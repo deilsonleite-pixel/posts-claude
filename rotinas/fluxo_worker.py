@@ -678,7 +678,8 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
                 continue
             pid = (e.get("ext") or {}).get("id")
             # já saiu (concluido/publicado): nada mais a fazer nessa rede; sem isto a etapa 2 acusava "horário passou"
-            if e.get("st") in ("concluido", "publicado") and aut and e.get("aut") == aut["id"]:
+            # refazer falha: rede que já saiu (mesmo com autorização anterior) nunca é republicada
+            if e.get("st") in ("concluido", "publicado") and aut and (e.get("aut") == aut["id"] or aut.get("refazer")):
                 want.pop(r, None)
                 continue
             if pid and e.get("st") in ("enviado", "agendado", "cancelando", "divergente"):
