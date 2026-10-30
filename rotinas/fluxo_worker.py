@@ -722,7 +722,8 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
             # URGENTE (regra do Deilson, 16/10/2026): peça marcada "urgente" com Pode postar é publicada NA HORA
             # (Publicar agora: POST /posts/publish, sem schedule_time). Não mexe em nada que já está programado.
             # Pode postar "agora" (aut.agora) vale mesmo depois da meia-noite: peça de ontem clicada de madrugada sai na hora.
-            urgente = bool(p.get("urgente")) and (data == AGORA.strftime("%Y-%m-%d") or bool(aut.get("agora")))
+            # Refazer falha (regra do Deilson, 30/10/2026): "Pode postar no <rede> agora" publica na hora só nas redes que falharam.
+            urgente = bool(aut.get("refazer")) or (bool(p.get("urgente")) and (data == AGORA.strftime("%Y-%m-%d") or bool(aut.get("agora"))))
             adot_doc = set()
             texto = (aut.get("snap") or {}).get("texto") or ((p.get("legenda") or "") + ("\n\n" + p["hashtags"] if p.get("hashtags") else ""))
             for r, q in sorted(want.items()):
