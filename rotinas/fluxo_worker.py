@@ -664,7 +664,7 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
             n_img = len(p.get("slides") or []) or 1
             ig_fb_saiu = all((plat.get(r) or {}).get("st") == "concluido" for r in ("instagram", "facebook") if r in want)
             vale = base_q and (q_dt(base_q) > AGORA + dt.timedelta(minutes=10)
-                               or (p.get("urgente") and (p.get("data") or base_q[:10]) == AGORA.strftime("%Y-%m-%d") and not ig_fb_saiu))
+                               or (p.get("urgente") and ((p.get("data") or base_q[:10]) == AGORA.strftime("%Y-%m-%d") or aut.get("agora")) and not ig_fb_saiu))
             for r in c.get("redes_extras") or []:
                 if r in want or (r == "twitter" and n_img > 4):
                     continue
