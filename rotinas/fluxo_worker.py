@@ -584,6 +584,7 @@ def cunha_midia_acao(doc, p):
 
 # Legenda curta para X e Threads (regra do Deilson, 27/10/2026): limite em caracteres (o X conta emoji como 2).
 LIMITE_TEXTO = {"twitter": 270, "threads": 490}
+LIMITE_IG = 2200
 
 def _tam(t):
     return len(t.encode("utf-16-le")) // 2
@@ -745,6 +746,11 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
                 if r not in c.get("redes_conectadas", []):
                     if e0.get("erro_cod") != "rede_nao_conectada":
                         patch[r] = plat_entry("falha", quando=q, rev=rev, aut=aut["id"], erro=f"{r} não está configurado na integração do {nome}.", erro_cod="rede_nao_conectada", desde=now_iso())
+                    continue
+                # Instagram recusa legenda acima de 2.200 caracteres (Zoho 36004): não envia, avisa o motivo
+                if r == "instagram" and len(tx) > LIMITE_IG:
+                    if e0.get("erro_cod") != "legenda_longa" or e0.get("aut") != aut["id"]:
+                        patch[r] = plat_entry("falha", ext=e0.get("ext"), quando=q, rev=rev, aut=aut["id"], erro=f"A legenda tem {len(tx)} caracteres e o Instagram aceita no máximo {LIMITE_IG}. Encurte a legenda e dê Pode postar de novo.", erro_cod="legenda_longa", desde=now_iso())
                     continue
                 if not urgente and q_dt(q) <= AGORA + dt.timedelta(minutes=10):
                     if e0.get("erro_cod") != "horario_passou" or e0.get("aut") != aut["id"]:
