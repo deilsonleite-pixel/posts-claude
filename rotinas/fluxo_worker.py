@@ -625,6 +625,43 @@ def texto_curto(p, limite):
         return (out + "\n\n" + tags).strip()
     return "\n\n".join([pars[i] for i in sorted(escolhidos)] + [tags])
 
+def texto_ig(texto, p, limite=LIMITE_IG):
+    """Instagram aceita até 2.200 caracteres (regra do Deilson, 30/10/2026: se o erro já diz o tamanho, corrige sozinho).
+    Devolve (texto, como): como = None (coube), "atual" (o snap do Pode postar estava longo e a legenda atual da peça
+    cabe) ou "ajustada" (cortada em parágrafos inteiros: tira a linha de CTA e depois o corpo do fim para o começo,
+    mantendo título, gancho, aviso legal e hashtags)."""
+    if _tam(texto) <= limite:
+        return texto, None
+    tags = (p.get("hashtags") or "").strip()
+    linhas = texto.split("\n", 1)
+    head = linhas[0].strip() if len(linhas) > 1 and linhas[0].strip() and linhas[0].strip() == linhas[0].strip().upper() and linhas[0].strip() not in (p.get("legenda") or "") else ""
+    leg = (p.get("legenda") or "").strip()
+    if leg:
+        atual = (head + "\n" if head else "") + leg + ("\n\n" + tags if tags else "")
+        if _tam(atual) <= limite:
+            return atual, ("atual" if atual != texto else None)
+    base = leg or texto[len(head):].strip()
+    pars = [x.strip() for x in re.split(r"\n\s*\n", base) if x.strip()]
+    if not tags and pars and pars[-1].startswith("#"):
+        tags = pars.pop()
+    pars = [x for x in pars if not x.startswith("#")]
+    cta = lambda x: x.startswith(("📲", "Salve", "Salva", "Mande", "Marque", "Compartilhe"))
+    fixo = lambda i, x: i == 0 or bool(re.search(r"fictíci|Conteúdo informativo|não substitui", x))
+    def monta(ps):
+        return (head + "\n" if head else "") + "\n\n".join(ps + ([tags] if tags else []))
+    ps = list(pars)
+    if _tam(monta(ps)) > limite:
+        ps = [x for x in ps if not cta(x)]
+    i = len(ps) - 1
+    while _tam(monta(ps)) > limite and i > 0:
+        if not fixo(i, ps[i]):
+            ps.pop(i)
+        i -= 1
+    out = monta(ps)
+    if _tam(out) > limite:  # ainda longo (gancho enorme): corta no fim da última frase que cabe
+        out = out[:limite].rsplit(" ", 1)[0]
+    return out, "ajustada"
+
 def limite_semana(hoje=None):
     """Último dia que o "Pode postar" agenda na hora: o domingo da semana atual. De sexta em diante, a semana
     seguinte já foi liberada pela rodada de sexta, então vale o domingo seguinte (regra do Deilson, 21/10/2026)."""
@@ -747,11 +784,16 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
                     if e0.get("erro_cod") != "rede_nao_conectada":
                         patch[r] = plat_entry("falha", quando=q, rev=rev, aut=aut["id"], erro=f"{r} não está configurado na integração do {nome}.", erro_cod="rede_nao_conectada", desde=now_iso())
                     continue
-                # Instagram recusa legenda acima de 2.200 caracteres (Zoho 36004): não envia, avisa o motivo
-                if r == "instagram" and len(tx) > LIMITE_IG:
-                    if e0.get("erro_cod") != "legenda_longa" or e0.get("aut") != aut["id"]:
-                        patch[r] = plat_entry("falha", ext=e0.get("ext"), quando=q, rev=rev, aut=aut["id"], erro=f"A legenda tem {len(tx)} caracteres e o Instagram aceita no máximo {LIMITE_IG}. Encurte a legenda e dê Pode postar de novo.", erro_cod="legenda_longa", desde=now_iso())
-                    continue
+                # Instagram recusa legenda acima de 2.200 caracteres (Zoho 36004). Regra do Deilson (30/10/2026):
+                # não para com erro; usa a legenda atual da peça se couber, senão encurta em parágrafos inteiros.
+                if r == "instagram" and _tam(tx) > LIMITE_IG:
+                    antes = _tam(tx)
+                    tx, como = texto_ig(tx, p)
+                    if e0.get("erro_cod") == "legenda_longa" and e0.get("aut") == aut["id"]:
+                        e0 = dict(e0, st=None, erro=None, erro_cod=None)
+                    if como:
+                        avisos.append(f"{doc} · instagram: legenda de {antes} caracteres; " + ("usada a legenda atual da peça" if como == "atual" else "encurtada automaticamente") + f" ({_tam(tx)})")
+                        marcas.append({"doc": doc, "patch": {}, "evento": ("legenda_ajustada", f"instagram · {antes} → {_tam(tx)} caracteres · " + ("legenda atual da peça" if como == "atual" else "encurtada em parágrafos inteiros (sem CTA/corpo final), aviso legal mantido"))})
                 if not urgente and q_dt(q) <= AGORA + dt.timedelta(minutes=10):
                     if e0.get("erro_cod") != "horario_passou" or e0.get("aut") != aut["id"]:
                         patch[r] = plat_entry("falha", quando=q, rev=rev, aut=aut["id"], erro=f"O horário {q.replace('T', ' ')} passou sem agendamento. Defina nova data nos Detalhes: nada sai imediatamente.", erro_cod="horario_passou", desde=now_iso())

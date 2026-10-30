@@ -321,5 +321,15 @@ ok("Zoho: data diferente da Central só gera aviso", not r and av, (r, av))
 r = fw2.zoho_conferir_horarios(fw2.CFG["centrais"]["cunha"], PH, {"h": {"aprov": APR}}, ag, {"900"}, [])
 ok("Zoho: post do próprio fluxo não entra na conferência", not r, r)
 
+# 15. Instagram com legenda acima de 2.200 (regra do Deilson, 30/10): corrige sozinho em vez de falhar
+par = lambda i: f"Parágrafo {i} " + "texto do corpo " * 12
+PL = {"legenda": "\n\n".join(["Gancho do post."] + [par(i) for i in range(14)] + ["Salve e mande para quem precisa.", "Conteúdo informativo. Cada caso migratório exige análise individual."]), "hashtags": "#a #b"}
+t, como = fw2.texto_ig(PL["legenda"] + "\n\n#a #b", PL)
+ok("Instagram: legenda longa é encurtada em parágrafos inteiros, com gancho, aviso legal e hashtags",
+   como == "ajustada" and fw2._tam(t) <= 2200 and t.startswith("Gancho") and "Conteúdo informativo" in t and t.endswith("#a #b") and "Salve" not in t, (como, fw2._tam(t)))
+t, como = fw2.texto_ig("X" * 2300, {"legenda": "Legenda nova curta.", "hashtags": "#a"})
+ok("Instagram: snap longo usa a legenda atual da peça quando ela cabe", como == "atual" and t == "Legenda nova curta.\n\n#a", (como, t))
+ok("Instagram: legenda que cabe não muda", fw2.texto_ig("curta", PL) == ("curta", None), None)
+
 print("\n%d cenário(s) com falha" % len(falhas) if falhas else "\nTodos os cenários passaram.")
 sys.exit(1 if falhas else 0)
