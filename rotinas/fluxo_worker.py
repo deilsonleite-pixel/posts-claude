@@ -662,6 +662,21 @@ def texto_ig(texto, p, limite=LIMITE_IG):
         out = out[:limite].rsplit(" ", 1)[0]
     return out, "ajustada"
 
+AUTO_RETENTAR = 2
+
+def hashtags_5(texto):
+    """Regra da copy: exatamente 5 hashtags, tema primeiro, fechando #imigracaoeua #cunhalaw. Se a legenda vier com
+    mais de 5, mantém as primeiras do tema e as duas de fechamento (corrige sozinho, sem mudar o resto)."""
+    linhas = texto.rstrip().split("\n")
+    if not linhas or not linhas[-1].strip().startswith("#"):
+        return texto
+    tags = linhas[-1].split()
+    if len(tags) <= 5 or not all(t.startswith("#") for t in tags):
+        return texto
+    fecho = ["#imigracaoeua", "#cunhalaw"]
+    tema = [t for t in dict.fromkeys(tags) if t.lower() not in fecho][:3]
+    return "\n".join(linhas[:-1] + [" ".join(tema + fecho)])
+
 def limite_semana(hoje=None):
     """Último dia que o "Pode postar" agenda na hora: o domingo da semana atual. De sexta em diante, a semana
     seguinte já foi liberada pela rodada de sexta, então vale o domingo seguinte (regra do Deilson, 21/10/2026)."""
@@ -739,7 +754,7 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
                         marcas.append({"doc": doc, "patch": {"excluido": dict(exc, publicado=True)}})
                 elif stz == "scheduled":
                     if quer:
-                        novo = plat_entry("agendado", ext=e.get("ext"), quando=e.get("quando"), rev=rev, aut=aut["id"], sync=now_iso(), tent=e.get("tent", 0))
+                        novo = plat_entry("agendado", ext=e.get("ext"), quando=e.get("quando"), rev=rev, aut=aut["id"], sync=now_iso(), tent=e.get("tent", 0), auto=e.get("auto") or 0)
                         if e.get("st") != "agendado":
                             marcas.append({"doc": doc, "patch": {}, "evento": ("agendado", f"{r} · {e.get('quando')} · {nome} post {pid} (status scheduled)")})
                     else:
@@ -748,11 +763,16 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
                 elif stz == "unpublished":
                     err = (linha or {}).get("error") or {}
                     novo = plat_entry("falha", ext=e.get("ext"), quando=e.get("quando"), rev=e.get("rev"), aut=e.get("aut"), sync=now_iso(), erro=f"{nome}: {err.get('message') or 'não publicado'}", erro_cod=str(err.get("code") or "unpublished"))
+                    # Regra do Deilson (30/10/2026): deu erro, corrige e posta de novo sozinho, na rede que falhou,
+                    # com o mesmo conteúdo aprovado (a etapa 2 já ajusta legenda/hashtags). Até AUTO_RETENTAR vezes.
+                    if quer and (e.get("auto") or 0) < AUTO_RETENTAR:
+                        novo = dict(novo, erro_cod="retentar", auto=(e.get("auto") or 0) + 1, erro=f"{nome} recusou ({err.get('code') or 'erro'}: {err.get('message') or 'não publicado'}); a fila corrige e publica de novo sozinha.")
+                        marcas.append({"doc": doc, "patch": {}, "evento": ("retentar", f"{r} · {nome} recusou o post {pid} ({err.get('code') or 'erro'}); nova tentativa automática {novo['auto']}/{AUTO_RETENTAR}")})
                 else:
                     continue  # resposta incerta: não muda nada, confere na próxima hora
                 if any(novo.get(k) != e.get(k) for k in ("st", "aut", "rev", "erro")) or (novo.get("st") == "agendado" and not e.get("sync")):
                     patch[r] = novo
-                if r in want and novo["st"] in ("agendado", "concluido", "falha"):
+                if r in want and novo["st"] in ("agendado", "concluido", "falha") and novo.get("erro_cod") != "retentar":
                     want.pop(r, None)
         # 2) autorizado e ainda sem agendamento no Zoho
         if want and p:
@@ -762,12 +782,16 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
             # (Publicar agora: POST /posts/publish, sem schedule_time). Não mexe em nada que já está programado.
             # Pode postar "agora" (aut.agora) vale mesmo depois da meia-noite: peça de ontem clicada de madrugada sai na hora.
             # Refazer falha (regra do Deilson, 30/10/2026): "Pode postar no <rede> agora" publica na hora só nas redes que falharam.
-            urgente = bool(aut.get("refazer")) or (bool(p.get("urgente")) and (data == AGORA.strftime("%Y-%m-%d") or bool(aut.get("agora"))))
+            urgente_peca = bool(aut.get("refazer")) or (bool(p.get("urgente")) and (data == AGORA.strftime("%Y-%m-%d") or bool(aut.get("agora"))))
             adot_doc = set()
             texto = (aut.get("snap") or {}).get("texto") or ((p.get("legenda") or "") + ("\n\n" + p["hashtags"] if p.get("hashtags") else ""))
             for r, q in sorted(want.items()):
                 e0 = plat.get(r) or {}
-                tx = texto_curto(p, LIMITE_TEXTO[r]) if r in LIMITE_TEXTO else texto
+                retentar = (patch.get(r) or e0).get("erro_cod") == "retentar" and (patch.get(r) or e0).get("aut") == aut["id"]
+                if retentar:
+                    e0 = dict(patch.get(r) or e0, st=None)
+                urgente = urgente_peca or retentar
+                tx = texto_curto(p, LIMITE_TEXTO[r]) if r in LIMITE_TEXTO else hashtags_5(texto)
                 if "p_" + doc in postado:
                     if e0.get("st") != "concluido" or e0.get("aut") != aut["id"]:
                         patch[r] = plat_entry("concluido", quando=q, rev=rev, aut=aut["id"], sync=now_iso())
@@ -861,7 +885,7 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
                 acoes.append({"tipo": "zoho_criar", "doc": doc, "redes": [r], "quando": q, "corpo": corpo, "aut": aut["id"],
                               "endpoint": endpoint, "agora": urgente,
                               "esperado": {"aut_id": aut["id"], "rev": rev},
-                              "claim": {"plat": {r: plat_entry("enviando", quando=q, rev=rev, aut=aut["id"], desde=now_iso(), tent=(e0.get("tent") or 0) + 1 if e0.get("aut") == aut["id"] else 1)}}})
+                              "claim": {"plat": {r: plat_entry("enviando", quando=q, rev=rev, aut=aut["id"], desde=now_iso(), tent=(e0.get("tent") or 0) + 1 if e0.get("aut") == aut["id"] else 1, auto=e0.get("auto") or 0)}}})
         if patch:
             marcas.append({"doc": doc, "patch": {"plat": patch}})
         if exc and exc.get("estado") != "concluido":
@@ -1087,7 +1111,7 @@ def zoho_criar(central, acao_path):
     item = ((js.get("data") or [{}]) or [{}])[0] if isinstance(js, dict) else {}
     ok = code == 200 and item.get("success") and item.get("post_id")
     if ok:
-        e = plat_entry("enviado", ext={"id": str(item["post_id"]), "url": "https://social.zoho.com"}, quando=a["quando"], rev=a["esperado"]["rev"], aut=a["aut"], desde=now_iso(), tent=a["claim"]["plat"][r0]["tent"])
+        e = plat_entry("enviado", ext={"id": str(item["post_id"]), "url": "https://social.zoho.com"}, quando=a["quando"], rev=a["esperado"]["rev"], aut=a["aut"], desde=now_iso(), tent=a["claim"]["plat"][r0]["tent"], auto=a["claim"]["plat"][r0].get("auto") or 0)
         if item.get("is_approval_needed"):
             e["erro"] = "O Zoho marcou o post como dependente de aprovação interna: aprove no Zoho para ele ficar agendado."
         modo = "publicado agora (urgente)" if a.get("agora") else a["quando"]
