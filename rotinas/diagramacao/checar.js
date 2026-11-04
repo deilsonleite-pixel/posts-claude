@@ -10,6 +10,8 @@
    H7 destaque laranja: 1 trecho (palavra-chave ou a frase do impacto), no máximo 60% das palavras, nunca a manchete inteira
    H8 frase que termina (. ? !) fecha a linha, nunca fica no meio dela
    M1 todo texto dentro das margens: >= 80 px das laterais, >= 96 px da borda de baixo, >= 60 px do topo
+   V1 sem componentes genéricos: checkbox, ✓, bolinha, emoji ou ícone de biblioteca no texto
+   V2 cantos retos: nenhuma caixa/cartão/forma com raio > 4 px (exceto avatar redondo e pílula da assinatura de perfil)
    Rosto e foto esticada: não dá para medir com segurança aqui -> conferir olhando a imagem (regra V1 e V2). */
 (function(g){
 const FRACAS=new Set("o a os as um uma uns umas de da do das dos e em no na nos nas ao aos à às para pra por pelo pela pelos pelas com sem que se ou mas nem".split(" "));
@@ -38,6 +40,14 @@ function checar(root=document,o={}){
  });
  // M1 margens
  const tw=document.createTreeWalker(sl,NodeFilter.SHOW_TEXT);let n;while(n=tw.nextNode()){if(!n.textContent.trim())continue;const pe=n.parentElement;if(pe.closest('[data-livre],.bot'))continue;const cs=getComputedStyle(pe);if(cs.visibility==='hidden'||pe.offsetParent===null)continue;const r=document.createRange();r.selectNodeContents(n);for(const b of r.getClientRects()){if(!b.width)continue;const l=b.left-S.left,rt=S.right-b.right,bt=S.bottom-b.bottom,tp=b.top-S.top;if(l<80||rt<80||bt<96||tp<60){falhas.push('M1 texto fora da margem: "'+n.textContent.trim().slice(0,40)+'" (esq '+Math.round(l)+', dir '+Math.round(rt)+', baixo '+Math.round(bt)+', topo '+Math.round(tp)+')');break;}}}
+ // V1 e V2 — identidade Cunha Law, sem cara de componente genérico (Deilson 04/11)
+ const GEN=/[\u2610-\u2612\u2713-\u2718\u2705\u274C\u274E\u2022\u25CF\u25CB\u25C9\u25A0\u25AA\u2B50\u{1F300}-\u{1FAFF}]/u;
+ const tw2=document.createTreeWalker(sl,NodeFilter.SHOW_TEXT);let n2;while(n2=tw2.nextNode()){const m=GEN.exec(n2.textContent);if(m&&n2.parentElement.offsetParent!==null){falhas.push('V1 componente genérico no texto ("'+m[0]+'"): usar o marcador da asa (img/marcador-asa.png) ou o traço laranja');break;}}
+ for(const el of sl.querySelectorAll('*')){if(el.offsetParent===null||el.closest('.top.av,.top,.bot .who,.bot.av,[data-marca]'))continue;const cs=getComputedStyle(el);const r=parseFloat(cs.borderTopLeftRadius)||0;if(r<=4)continue;
+  const b=el.getBoundingClientRect();if(b.width<20||b.height<20)continue;if(el.tagName==='IMG'&&/avatar|dr-leo/.test(el.src))continue;
+  const visivel=(cs.backgroundColor&&!/rgba\(0, 0, 0, 0\)|transparent/.test(cs.backgroundColor))||cs.backgroundImage!=='none'&&el.tagName!=='IMG'||parseFloat(cs.borderTopWidth)>0||cs.boxShadow!=='none'||el.tagName==='IMG';
+  if(visivel){falhas.push('V2 forma com canto arredondado ('+Math.round(r)+' px, '+(el.className||el.tagName)+'): cantos retos, bloco navy chapado ou fio laranja');}}
+ const ckb=sl.querySelector('input[type=checkbox]');if(ckb)falhas.push('V1 checkbox na arte');
  return {ok:!falhas.length,falhas:[...new Set(falhas)],manchetes};
 }
 g.checarArte=checar;

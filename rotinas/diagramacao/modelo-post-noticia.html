@@ -21,6 +21,9 @@
 .sl h4{margin:0;font-family:"Bebas Neue",sans-serif;font-weight:400;font-size:150px;line-height:.92;letter-spacing:.005em;text-transform:uppercase;color:#fff}
 .sl h4 em{font-style:normal;color:#FF8C4A}
 .sl .apoio{font-size:40px;line-height:1.3;font-weight:400;color:#fff;margin:0}
+.sl .itens{list-style:none;margin:0;padding:0;display:grid;gap:18px}
+.sl .itens li{display:grid;grid-template-columns:56px 1fr;gap:22px;align-items:center;font-size:38px;line-height:1.25;color:#fff}
+.sl .itens li img{width:56px;height:56px;display:block} /* marcador da marca: asa branca em quadrado laranja, cantos retos. Nunca checkbox, ✓ ou bolinha */
 .sl .aviso{font-size:26px;color:#C9D6E0;margin:0}
 </style></head><body>
 <div class="sl">
@@ -31,6 +34,7 @@
   <div class="linha1"><span class="kick" id="kick"></span><span class="cred" id="cred"></span></div>
   <h4 id="h"></h4>
   <p class="apoio" id="apoio"></p>
+  <ul class="itens" id="itens"></ul>
   <p class="aviso" id="aviso"></p>
  </div>
 </div>
@@ -39,13 +43,14 @@
 window.PECA=window.PECA||{
  foto:"foto.jpg", foco:"50% 30%", credito:"Foto: fonte/autor (licença)",
  etiqueta:"Assunto · Tema", manchete:"Manchete com *destaque*",
- apoio:"Texto de apoio em até 3 linhas.", aviso:"Conteúdo informativo."
+ apoio:"Texto de apoio em até 3 linhas.", itens:[/* opcional: até 4 itens curtos */], aviso:"Conteúdo informativo."
 };
 (function(){const q=new URLSearchParams(location.search).get('d');const P=q?JSON.parse(q):window.PECA;
  const esc=s=>String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
  document.getElementById('foto').src=P.foto;document.documentElement.style.setProperty('--foco',P.foco||'50% 30%');
  if(P.avatar)document.getElementById('av').src=P.avatar;
  kick.textContent=P.etiqueta;cred.textContent=P.credito||'';apoio.textContent=P.apoio||'';aviso.textContent=P.aviso||'Conteúdo informativo.';
+ itens.innerHTML=(P.itens||[]).map(t=>'<li><img src="img/marcador-asa.png" alt=""><span>'+esc(t)+'</span></li>').join('');if(!(P.itens||[]).length)itens.remove();if(!P.apoio)apoio.remove();
  h.innerHTML=esc(P.manchete).replace(/\*([^*]+)\*/g,'<em>$1</em>');
  // a foto ocupa tudo acima do texto (+140 px por baixo do degradê); render.js chama ajustarFoto() depois do fit
  window.ajustarFoto=function(){const t=document.getElementById('txt').getBoundingClientRect().top;document.documentElement.style.setProperty('--fh',Math.max(640,Math.round(t+140))+'px');};

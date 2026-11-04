@@ -61,6 +61,19 @@ Versão de 04/11/2026, pedida pelo Deilson ("revise todo o conhecimento de diagr
 - Enquadramento: o rosto fica a cerca de 60% da largura (o avatar está à esquerda) e a cerca de 46% da altura da área da foto. É isso que o `foco.py` faz.
 - Sem recorte de objeto nem montagem de duas fotos ([[design-sem-recorte-montagem]]).
 
+## Elementos visuais: DNA da Cunha Law, nada de componente genérico
+
+Regra do Deilson de 04/11/2026, para todas as peças. Caixas de texto, bordas arredondadas, bolinhas, shapes e checkboxes ficam com "cara de Claude", que é diferente do DNA da Cunha Law.
+
+| Código | Regra |
+|---|---|
+| V1 | Nada de checkbox, ✓, ✅, bolinha (•, ●), emoji ou ícone de biblioteca. Marcador de lista ou checklist = **asa da Cunha Law em quadrado laranja**, com cantos retos (`img/marcador-asa.png`, de 56 a 64 px, feito a partir do isotype-mono-orange do manual da marca). Também vale o traço laranja do molde (34x6 px). |
+| V2 | Cantos retos: nenhuma caixa, cartão, etiqueta ou forma com raio acima de 4 px. Só duas exceções da marca (manual, item 06): o avatar redondo com borda branca e a pílula translúcida da assinatura de perfil. |
+| V3 | Caixa de texto não é cartão com borda e sombra. Use texto direto sobre o degradê navy, um bloco navy chapado de borda a borda ou um fio laranja de 4 a 6 px ao lado ou acima do bloco. |
+| V4 | Elementos permitidos: foto, asa (logo como arquivo, sem redesenhar), avatar com nome e @, etiqueta laranja de cantos retos, fio laranja, números em Bebas e as cores navy, laranja, branco e névoa. Nada de shapes abstratos, gradientes coloridos, sombras difusas nem ícones de terceiros. |
+
+O `checar.js` mede V1 e V2. O resto se confere na prévia de celular.
+
 ## O que o script não mede (olhar na prévia de celular)
 
 - Se a foto conta a história da manchete.
