@@ -43,7 +43,7 @@ Versão de 04/11/2026, pedida pelo Deilson ("revise todo o conhecimento de diagr
    - site oficial e sala de imprensa (house.gov, senate.gov, whitehouse.gov, sites de campanha);
    - foto de agência/jornal (og:image da matéria) só quando o Deilson autorizar o risco ([[imagem-rapido-pratico]]), sempre com crédito.
 3. Assunto sem pessoa: imagem que se entende de relance (DNA 27/10), de bancos livres (Unsplash, Wikimedia) ou frames dos vídeos dele.
-4. Antes de escolher, monte uma folha com pelo menos 6 candidatas e escolha pela narrativa: a pessoa em ação, olhando para dentro da arte, com luz no rosto e fundo que não briga com o texto.
+4. Nunca pare na primeira foto boa (Deilson, 04/11). Monte uma folha com 4 a 6 candidatas de campanha, discurso ou evento e escolha a de rosto grande e expressivo, com contexto (plateia, bandeira, microfone), luz no rosto e fundo que não briga com o texto.
 5. Crédito sempre na arte: "Foto: autor (licença)". Confira o autor na página do arquivo. Não invente.
 
 **Qualidade e aplicação**
