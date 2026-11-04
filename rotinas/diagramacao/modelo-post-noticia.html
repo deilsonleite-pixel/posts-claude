@@ -1,0 +1,54 @@
+<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+<!-- MODELO OFICIAL · post de notícia/assunto com foto (Cunha Law, regras de 04/11/2026)
+     Preencha o bloco PECA abaixo (ou passe ?d=<json url-encoded>) e renderize com:
+       node render.js modelo-post-noticia.html - saida/prefixo [--pessoa]
+     A manchete se ajusta sozinha (fit-headline.js): sem palavra sozinha, linhas equilibradas, fonte que preenche a largura.
+     A foto ocupa todo o espaço acima do texto, de borda a borda; o foco da foto vem de foco.py (rosto no terço de cima). -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Outfit:wght@300;400;500;600&display=swap">
+<style>
+*{box-sizing:border-box}body{margin:0;background:#03192A}
+.sl{width:1080px;height:1350px;position:relative;overflow:hidden;background:#03192A;font-family:Outfit,sans-serif;color:#fff}
+.sl .foto{position:absolute;left:0;top:0;width:1080px;height:var(--fh,700px);object-fit:cover;object-position:var(--foco,50% 30%)}
+.sl .foto-sombra{position:absolute;left:0;width:1080px;top:calc(var(--fh,700px) - 300px);height:300px;background:linear-gradient(180deg,rgba(3,25,42,0) 0%,rgba(3,25,42,.75) 60%,#03192A 100%)}
+.sl .foto-topo{position:absolute;left:0;top:0;width:1080px;height:220px;background:linear-gradient(180deg,rgba(3,25,42,.55),rgba(3,25,42,0))}
+.sl .top{position:absolute;left:80px;top:60px;display:flex;align-items:center;gap:16px;background:rgba(3,25,42,.62);padding:7px 26px 7px 7px;border-radius:60px}
+.sl .top img{width:80px;height:80px;border-radius:50%;object-fit:cover;border:4px solid #fff}
+.sl .top b{display:block;font-weight:600;font-size:30px;line-height:1.1}.sl .top small{font-size:23px;color:#9FB3C2}
+.sl .txt{position:absolute;left:92px;right:92px;bottom:110px;display:flex;flex-direction:column;gap:26px}
+.sl .linha1{display:flex;justify-content:space-between;align-items:center;gap:20px}
+.sl .kick{font-weight:600;font-size:30px;letter-spacing:.1em;text-transform:uppercase;color:#03192A;background:#FF8C4A;padding:8px 20px;border-radius:4px;white-space:nowrap}
+.sl .cred{font-size:20px;color:#9FB3C2;text-align:right}
+.sl h4{margin:0;font-family:"Bebas Neue",sans-serif;font-weight:400;font-size:150px;line-height:.92;letter-spacing:.005em;text-transform:uppercase;color:#fff}
+.sl h4 em{font-style:normal;color:#FF8C4A}
+.sl .apoio{font-size:40px;line-height:1.3;font-weight:400;color:#fff;margin:0}
+.sl .aviso{font-size:26px;color:#C9D6E0;margin:0}
+</style></head><body>
+<div class="sl">
+ <img class="foto" id="foto" alt="">
+ <div class="foto-topo"></div><div class="foto-sombra"></div>
+ <div class="top"><img id="av" src="img/avatar-leo.jpg" alt=""><span><b>Dr. Leopoldo Cunha</b><small>@leocunhalaw</small></span></div>
+ <div class="txt" id="txt">
+  <div class="linha1"><span class="kick" id="kick"></span><span class="cred" id="cred"></span></div>
+  <h4 id="h"></h4>
+  <p class="apoio" id="apoio"></p>
+  <p class="aviso" id="aviso"></p>
+ </div>
+</div>
+<script>
+/* ===== PECA: preencha aqui ===== */
+window.PECA=window.PECA||{
+ foto:"foto.jpg", foco:"50% 30%", credito:"Foto: fonte/autor (licença)",
+ etiqueta:"Assunto · Tema", manchete:"Manchete com *destaque*",
+ apoio:"Texto de apoio em até 3 linhas.", aviso:"Conteúdo informativo."
+};
+(function(){const q=new URLSearchParams(location.search).get('d');const P=q?JSON.parse(q):window.PECA;
+ const esc=s=>String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+ document.getElementById('foto').src=P.foto;document.documentElement.style.setProperty('--foco',P.foco||'50% 30%');
+ if(P.avatar)document.getElementById('av').src=P.avatar;
+ kick.textContent=P.etiqueta;cred.textContent=P.credito||'';apoio.textContent=P.apoio||'';aviso.textContent=P.aviso||'Conteúdo informativo.';
+ h.innerHTML=esc(P.manchete).replace(/\*([^*]+)\*/g,'<em>$1</em>');
+ // a foto ocupa tudo acima do texto (+140 px por baixo do degradê); render.js chama ajustarFoto() depois do fit
+ window.ajustarFoto=function(){const t=document.getElementById('txt').getBoundingClientRect().top;document.documentElement.style.setProperty('--fh',Math.max(640,Math.round(t+140))+'px');};
+ window.ajustarFoto();
+})();
+</script></body></html>
