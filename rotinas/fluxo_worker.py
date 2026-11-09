@@ -753,7 +753,15 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
                     if exc:
                         marcas.append({"doc": doc, "patch": {"excluido": dict(exc, publicado=True)}})
                 elif stz == "scheduled":
-                    if quer:
+                    # Publicar agora (urgente ou retentativa da fila de falhas): logo depois do POST /posts/publish o Zoho
+                    # ainda responde "scheduled" por alguns minutos. Com o horário já passado isso NÃO é agendamento:
+                    # fica "enviado" (publicando) e a próxima rodada marca "concluido". Antes gravava "agendado" com a
+                    # data antiga e a peça parecia não publicada (EB-1A saiu 2x no IG em 06/11/2026 por isso).
+                    passou = bool(e.get("quando")) and q_dt(e["quando"]) < AGORA - dt.timedelta(minutes=5)
+                    if quer and passou:
+                        novo = dict(e, st="enviado", sync=now_iso())
+                        want.pop(r, None)
+                    elif quer:
                         novo = plat_entry("agendado", ext=e.get("ext"), quando=e.get("quando"), rev=rev, aut=aut["id"], sync=now_iso(), tent=e.get("tent", 0), auto=e.get("auto") or 0)
                         if e.get("st") != "agendado":
                             marcas.append({"doc": doc, "patch": {}, "evento": ("agendado", f"{r} · {e.get('quando')} · {nome} post {pid} (status scheduled)")})
