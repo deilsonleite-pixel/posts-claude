@@ -1,7 +1,7 @@
 # Conferência diária anti-duplicidade (Cunha Law)
 
 Regra do Deilson (09/11/2026): "para que não haja mais problemas e erros de duplicidade".
-Roda 2x por dia (manhã e fim de tarde, Orlando) numa sessão nova. Não apaga nada, nunca.
+Roda 2x por dia (4h47 e 16h47 Orlando = 6h47 e 18h47 Brasília) numa sessão nova. Não apaga nada, nunca.
 
 1. `git pull` do main. `D=/tmp/centrais/dump/cunha`.
 2. Rode o FILA.md SÓ para a cunha (passos 1 a 9, com o mLabs do passo 4). Isso marca Publicado o que já saiu
