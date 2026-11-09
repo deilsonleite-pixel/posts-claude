@@ -119,10 +119,12 @@ spec = importlib.util.spec_from_file_location("fw", W); fw = importlib.util.modu
 fw.zoho_token = lambda z: "tok"
 FUTD = "2026-12-01"  # depois do período em que a equipe agendou direto no Zoho
 _LS = fw.limite_semana
+META = {}
 def zplano(fluxo, pecas, status_api, midia=True, postado=(), limite="2099-12-31", extras=()):
     fw.limite_semana = lambda hoje=None: limite
     fw.CFG["centrais"]["cunha"]["redes_extras"] = list(extras)
     fw.zoho_req = lambda z, tok, m, path, body=None: status_api(path)
+    fw.meta_publicados = lambda dias=14: {k: (None if META.get(k, []) is None else list(META.get(k, []))) for k in ("instagram", "facebook")}
     fw.zoho_midia = lambda c, doc, p: ([{"file_path": "u", "name": "n", "type": "image", "format": "jpg", "size": 1, "width": 1080, "height": 1350}] if midia else None)
     d = tempfile.mkdtemp(); [os.makedirs(d + x) for x in ("/fluxo", "/pecas", "/postado")]
     for k, v in fluxo.items(): json.dump(v, open(f"{d}/fluxo/{k}.json", "w"))
@@ -233,7 +235,7 @@ ok("Zoho: publicado até 20/10 aparece como concluído (não externo)", pz(r)["s
 MS = int(fw.q_dt(FUT).timestamp() * 1000)
 ENV = {"c": {"aprov": APR, "aut": A, "plat": {"instagram": {"st": "enviando", "aut": "A1", "desde": iso(NOW - dt.timedelta(minutes=60)), "tent": 1, "quando": FUT}}}}
 def lista(itens, chamadas=None):
-    pags = {"/posts/schedules": (200, {"cursor": 10, "data": [{"post_id": "111", "schedule_time": MS + 3600000, "messages": [{"message": TXT}]}]}),
+    pags = {"/posts/schedules": (200, {"cursor": 10, "data": [{"post_id": "111", "schedule_time": MS + 3600000, "messages": [{"message": "Outro post antigo"}]}]}),
             "/posts/schedules?cursor=10": (200, {"cursor": None, "data": itens})}
     def f(p):
         if chamadas is not None: chamadas.append(p)
@@ -246,7 +248,8 @@ r = zplano(ENV, PZ, lista([{"post_id": "777", "schedule_time": MS, "messages": [
 ok("Zoho: nada parecido na lista -> nova tentativa numerada", len(r["acoes"]) == 1 and r["acoes"][0]["tipo"] == "zoho_criar" and r["acoes"][0]["claim"]["plat"]["instagram"]["tent"] == 2, r)
 r = zplano(dict(ENV, d={"aprov": APR, "plat": {"instagram": {"st": "agendado", "ext": {"id": "777"}, "quando": FUT}}}), PZ,
            lambda p: lista([{"post_id": "777", "schedule_time": MS, "messages": [{"message": TXT, "channels": [{"network": "instagram"}]}]}])(p) if "schedules" in p else (200, {"data": [{"network": "instagram", "status": "scheduled"}]}))
-ok("Zoho: post que já pertence a outra peça não é adotado", any(a["tipo"] == "zoho_criar" and a["doc"] == "c" for a in r["acoes"]), r)
+ok("Zoho: post que já pertence a outra peça não é adotado, e o mesmo texto na mesma rede trava a criação (anti-duplicidade)",
+   not any(a["tipo"] == "zoho_criar" and a["doc"] == "c" for a in r["acoes"]) and not any(m["doc"] == "c" and m["patch"].get("plat", {}).get("instagram", {}).get("ext", {}).get("id") == "777" for m in r["marcas"]) and any("trava anti-duplicidade" in x for x in r["avisos"]), r)
 r = zplano(ENV, PZ, lambda p: (500, {}) if "schedules" in p else (200, {}))
 ok("Zoho: lista indisponível -> não reenvia nesta rodada", not r["acoes"] and not pz(r), r)
 
@@ -269,6 +272,57 @@ r = zplano(ENVF, PZ, lista(dois))
 ok("Zoho: adoção respeita a rede (IG pega o post do IG, FB o do FB)", not r["acoes"] and pzr(r, "instagram").get("ext", {}).get("id") == "701" and pzr(r, "facebook").get("ext", {}).get("id") == "702", r)
 r = zplano(ENVF, PZ, lista(dois[:1]))
 ok("Zoho: só o post do IG existe -> FB não adota o do IG e é reenviado", pzr(r, "instagram").get("ext", {}).get("id") == "701" and [a["redes"] for a in r["acoes"]] == [["facebook"]], r)
+
+# 13c. TRAVA ANTI-DUPLICIDADE (Deilson 09/11/2026)
+TXTC = (PZ["c"].get("legenda") or "")
+def so_vazio(p): return (200, {"cursor": None, "data": []}) if "schedules" in p else (200, {})
+# texto real que o plano manda (para montar os cenários)
+r0 = zplano({"c": {"aprov": APR, "aut": A}}, PZ, so_vazio)
+TX0 = r0["acoes"][0]["corpo"]["post"]["messages"][0]["message"] if r0["acoes"] else ""
+ok("Trava: nada igual em lugar nenhum -> agenda normalmente", len(r0["acoes"]) == 1, r0)
+META["instagram"] = [{"chave": fw.chave(TX0), "quando": "2026-11-06T12:21:00+0000", "id": "IG1", "link": "https://instagram.com/p/x", "titulo": "t"}]
+r = zplano({"c": {"aprov": APR, "aut": A}}, PZ, so_vazio)
+ok("Trava: já saiu no Instagram com o mesmo texto -> marca Publicado e NÃO agenda de novo (caso EB-1A)", not r["acoes"] and pz(r).get("st") == "concluido" and pz(r)["ext"]["id"] == "IG1", r)
+r = zplano({"c": {"aprov": APR, "aut": aut(redes=("instagram",), q=PAST)}}, PU, so_vazio)
+ok("Trava: urgente (publicar agora) que já saiu não é publicado de novo", not r["acoes"] and pz(r).get("st") == "concluido", r)
+META["instagram"] = None
+r = zplano({"c": {"aprov": APR, "aut": A}}, PZ, so_vazio)
+ok("Trava: sem conseguir ler o que já saiu no Instagram -> não envia nesta rodada", not r["acoes"] and any("API Meta" in x for x in r["avisos"]), r)
+META.clear()
+outro = lambda p: (200, {"cursor": None, "data": [{"post_id": "555", "schedule_time": MS + 7200000, "messages": [{"message": TX0, "channels": [{"network": "instagram"}]}]}]}) if "schedules" in p else (200, {})
+r = zplano({"c": {"aprov": APR, "aut": A}}, PZ, outro)
+ok("Trava: mesmo texto já agendado no Zoho em OUTRO horário na mesma rede -> não cria (caso Mandamus)", not r["acoes"] and any("post 555" in x for x in r["avisos"]), r)
+outro_fb = lambda p: (200, {"cursor": None, "data": [{"post_id": "556", "schedule_time": MS + 7200000, "messages": [{"message": TX0, "channels": [{"network": "facebookpage"}]}]}]}) if "schedules" in p else (200, {})
+r = zplano({"c": {"aprov": APR, "aut": A}}, PZ, outro_fb)
+ok("Trava: o mesmo texto no Facebook não impede o Instagram", len(r["acoes"]) == 1, r)
+fw_ml = fw.mlabs_pendentes
+fw.mlabs_pendentes = lambda path: [{"origem": "mlabs", "id": "ML1", "rede": "instagram", "quando": "2026-11-14T08:00", "chave": fw.chave(TX0), "titulo": "t"}]
+_ex = os.path.exists
+os.path.exists = lambda f: True if f.endswith("mlabs.json") else _ex(f)
+r = zplano({"c": {"aprov": APR, "aut": A}}, PZ, so_vazio)
+os.path.exists = _ex; fw.mlabs_pendentes = fw_ml
+ok("Trava: mesmo texto já agendado no mLabs na mesma rede -> não cria", not r["acoes"] and any("mLabs" in x and "ML1" in x for x in r["avisos"]), r)
+ok("Chave: Resumo de semanas diferentes não bate", fw.chave("RESUMO DA SEMANA\n1. Trump assina ordem sobre asilo") != fw.chave("RESUMO DA SEMANA\n1. Senado aprova orçamento"), "")
+ok("Chave: lista copiada só com o começo do texto continua batendo", fw.mesma(fw.chave("Gancho forte aqui, com uma frase longa o bastante para passar de sessenta letras. Corpo"), fw.chave("Gancho forte aqui, com uma frase longa o bastante para passar de sessenta letras. Corpo inteiro " + "y" * 300)), "")
+ok("Chave: começo curto demais não decide sozinho", not fw.mesma(fw.chave("Resumo"), fw.chave("Resumo da semana inteira com muito texto " * 5)), "")
+ok("Chave: legenda encurtada para o IG continua batendo", fw.chave("Gancho forte aqui.\n\nCorpo " + "x" * 300) == fw.chave("Gancho forte aqui. Corpo " + "x" * 200), "")
+
+# 13d. conferência diária (só lê)
+ZP = [{"origem": "zoho", "id": "1", "rede": "instagram", "quando": "2026-11-10T08:00", "chave": "abc", "titulo": "A"},
+      {"origem": "zoho", "id": "2", "rede": "facebook", "quando": "2026-11-10T21:00", "chave": "abc", "titulo": "A"}]
+ML = tempfile.mktemp(suffix=".json")
+json.dump({"schedules": [{"id": "m1", "status": "scheduled", "channelSourceKey": "instagram_reels", "scheduledAt": "2026-11-10T13:00:00Z", "content": "abc"},
+                         {"id": "m2", "status": "scheduled", "channelSourceKey": "tiktok_business", "scheduledAt": "2026-11-10T13:00:00Z", "content": "abc"}]}, open(ML, "w"))
+cf = fw.conferir("cunha", ML, publicados={"instagram": [], "facebook": []}, zoho=ZP)
+ok("Conferência: mesma peça no Zoho e no mLabs na mesma rede = duplicata; redes diferentes não", len(cf["duplicatas_agendadas"]) == 1 and cf["duplicatas_agendadas"][0]["rede"] == "instagram" and not cf["ok"], cf)
+cf = fw.conferir("cunha", ML, publicados={"instagram": [], "facebook": [{"chave": "abc", "quando": "x", "id": "F", "link": "l", "titulo": "A"}]}, zoho=ZP[:1])
+ok("Conferência: publicado no Facebook não acusa o agendamento do Instagram", not cf["agendado_ja_publicado"] and cf["duplicatas_agendadas"], cf)
+cf = fw.conferir("cunha", ML, publicados={"instagram": [], "facebook": [{"chave": "abc", "quando": "x", "id": "F", "link": "l", "titulo": "A"}]}, zoho=ZP[1:])
+ok("Conferência: Facebook agendado com texto que já saiu no Facebook = alerta", any(x["rede"] == "facebook" for x in cf["agendado_ja_publicado"]), cf)
+cf = fw.conferir("cunha", ML, publicados={"instagram": None, "facebook": []}, zoho=[])
+ok("Conferência: fonte que não respondeu nunca dá 'ok'", not cf["ok"] and cf["falhas"], cf)
+cf = fw.conferir("cunha", None, publicados={"instagram": [], "facebook": []}, zoho=[])
+ok("Conferência: sem a lista do mLabs não dá 'ok'", not cf["ok"], cf)
 r = zplano(ENVF, PZ, lista([{"post_id": "703", "schedule_time": MS, "messages": [{"message": TXT}]}]))
 ok("Zoho: lista sem a rede do post -> não adota nem reenvia (evita trocar IG por FB)", not r["acoes"] and not pzr(r, "instagram") and not pzr(r, "facebook"), r)
 
@@ -330,6 +384,16 @@ ok("Instagram: legenda longa é encurtada em parágrafos inteiros, com gancho, a
 t, como = fw2.texto_ig("X" * 2300, {"legenda": "Legenda nova curta.", "hashtags": "#a"})
 ok("Instagram: snap longo usa a legenda atual da peça quando ela cabe", como == "atual" and t == "Legenda nova curta.\n\n#a", (como, t))
 ok("Instagram: legenda que cabe não muda", fw2.texto_ig("curta", PL) == ("curta", None), None)
+
+
+# 13e. Resumo da semana na segunda
+D = tempfile.mkdtemp(); os.makedirs(D + "/pecas"); os.makedirs(D + "/fluxo")
+SEG = dt.date(2026, 11, 9)
+ok("Resumo: segunda sem a peça = alerta", fw.resumo_semana(D, SEG)["ok"] is False, "")
+json.dump({"data": "2026-11-09"}, open(D + "/pecas/2026-11-09-resumo-semana-02-08.json", "w"))
+ok("Resumo: segunda com a peça = ok e diz o estado", fw.resumo_semana(D, SEG)["ok"] and "aguardando" in fw.resumo_semana(D, SEG)["msg"], "")
+ok("Resumo: outro dia não confere", fw.resumo_semana(D, dt.date(2026, 11, 10)) is None, "")
+shutil.rmtree(D)
 
 print("\n%d cenário(s) com falha" % len(falhas) if falhas else "\nTodos os cenários passaram.")
 sys.exit(1 if falhas else 0)
