@@ -466,7 +466,18 @@ def zoho_token(z, renovar=False):
         pass  # sem cache: funciona, só pede token de novo na próxima chamada
     return j["access_token"]
 
+_TOK_TROCA = {}   # token guardado que o Zoho recusou (401) -> token novo, para a rodada inteira pedir login uma vez só
+
 def zoho_req(z, tok, method, path, body=None):
+    tok = _TOK_TROCA.get(tok, tok)
+    code, js = _zoho_req(z, tok, method, path, body)
+    if code == 401 and method == "GET" and tok not in _TOK_TROCA.values():
+        novo = zoho_token(z, renovar=True)
+        _TOK_TROCA[tok] = novo
+        code, js = _zoho_req(z, novo, method, path, body)
+    return code, js
+
+def _zoho_req(z, tok, method, path, body=None):
     import urllib.request
     req = urllib.request.Request(z["api"] + path, method=method, data=json.dumps(body).encode() if body is not None else None,
                                  headers={"Authorization": "Zoho-oauthtoken " + tok, "portal_id": z["portal_id"], "brand_id": z["brand_id"], "content-type": "application/json"})
@@ -1217,6 +1228,14 @@ def chave(txt):
     Resumo da semana de uma semana não bater com o da outra; o mesmo texto encurtado para o IG continua batendo."""
     return simpl(txt or "")[:150]
 
+def mesma(a, b):
+    """Mesmo conteúdo: uma chave começa com a outra e a menor tem pelo menos 60 caracteres
+    (legenda encurtada ou lista copiada só com o começo do texto continua batendo)."""
+    if not a or not b:
+        return False
+    c, l = (a, b) if len(a) <= len(b) else (b, a)
+    return len(c) >= 60 and l.startswith(c) or a == b
+
 def _graph(url):
     st, txt = _get(url)
     try:
@@ -1308,7 +1327,7 @@ def trava_duplicidade(z, tok, zl, dump, rede, texto):
             zl["pub"] = meta_publicados()
         if zl["pub"].get(rede) is None:
             return ("bloqueio", f"não consegui ler o que já saiu no {rede} (API Meta); sem essa conferência não envio")
-        m = next((y for y in zl["pub"][rede] if y["chave"] == k), None)
+        m = next((y for y in zl["pub"][rede] if mesma(y["chave"], k)), None)
         if m:
             return ("publicado", m)
     if "l" not in zl:
@@ -1322,7 +1341,7 @@ def trava_duplicidade(z, tok, zl, dump, rede, texto):
             continue
         vistos.add(pid)
         txt, redes = zoho_texto(p), zoho_redes_do_post(p)
-        if txt and chave(txt) != k:
+        if txt and not mesma(chave(txt), k):
             continue
         if not txt or not redes:
             code, js = zoho_req(z, tok, "GET", f"/posts/schedules/{pid}")
@@ -1332,7 +1351,7 @@ def trava_duplicidade(z, tok, zl, dump, rede, texto):
                 txt, redes = zoho_texto(d) or txt, zoho_redes_do_post(d) or redes
             if not txt:
                 continue   # sem texto nem detalhe: não é post da Central (reel/vídeo à mão); a conferência diária cobre
-            if chave(txt) != k:
+            if not mesma(chave(txt), k):
                 continue
             if not redes:
                 return ("bloqueio", f"há agendamento no Zoho com o mesmo texto (post {pid}), mas não consegui ver a rede")
@@ -1345,7 +1364,7 @@ def trava_duplicidade(z, tok, zl, dump, rede, texto):
     if "ml" not in zl:
         f = os.path.join(dump, "mlabs.json")
         zl["ml"] = mlabs_pendentes(f) if os.path.exists(f) else []
-    x = next((y for y in zl["ml"] if y["rede"] == rede and y["chave"] == k), None)
+    x = next((y for y in zl["ml"] if y["rede"] == rede and mesma(y["chave"], k)), None)
     if x:
         return ("bloqueio", f"o mesmo texto já está agendado no mLabs para {x['quando']} (id {x['id']})")
     return None
@@ -1405,24 +1424,25 @@ def conferir(central, mlabs_path=None, publicados=None, zoho=None, dump=None):
         if pub.get(r) is None:
             falhas.append(f"{r} publicado não respondeu")
     pend = (zoho or []) + ml
-    grupos = {}
-    for x in pend:
-        if x["chave"]:
-            grupos.setdefault((x["rede"], x["chave"]), []).append(x)
-    dup = [{"rede": k[0], "titulo": v[0]["titulo"], "agendamentos": [{"origem": y["origem"], "id": y["id"], "quando": y["quando"]} for y in v]}
-           for k, v in sorted(grupos.items()) if len(v) > 1]
+    def agrupar(itens):
+        grupos = []
+        for x in itens:
+            if not x["chave"]:
+                continue
+            g = next((g for g in grupos if g[0]["rede"] == x["rede"] and mesma(g[0]["chave"], x["chave"])), None)
+            (g.append(x) if g is not None else grupos.append([x]))
+        return [g for g in grupos if len(g) > 1]
+    # a mesma peça na mesma rede em 2 agendamentos (o mesmo post do Zoho repetido na lista já foi tirado)
+    dup = [{"rede": v[0]["rede"], "titulo": v[0]["titulo"], "agendamentos": [{"origem": y["origem"], "id": y["id"], "quando": y["quando"]} for y in v]}
+           for v in agrupar(pend)]
     ja = []
     for x in pend:
-        m = next((y for y in (pub.get(x["rede"]) or []) if x["chave"] and y["chave"] == x["chave"]), None)
+        m = next((y for y in (pub.get(x["rede"]) or []) if mesma(y["chave"], x["chave"])), None)
         if m:
             ja.append({"rede": x["rede"], "titulo": x["titulo"], "agendado": {"origem": x["origem"], "id": x["id"], "quando": x["quando"]}, "publicado": m})
     dois = []
     for r in ("instagram", "facebook"):
-        g = {}
-        for m in pub.get(r) or []:
-            if m["chave"]:
-                g.setdefault(m["chave"], []).append(m)
-        dois += [{"rede": r, "titulo": v[0]["titulo"], "publicados": v} for v in g.values() if len(v) > 1]
+        dois += [{"rede": r, "titulo": v[0]["titulo"], "publicados": v} for v in agrupar([dict(m, rede=r) for m in pub.get(r) or []])]
     rs = resumo_semana(dump)
     return {"ok": not falhas and not dup and not ja and not dois and (rs or {}).get("ok", True), "falhas": falhas, "resumo_semana": rs, "duplicatas_agendadas": dup, "agendado_ja_publicado": ja,
             "publicado_2x": dois, "contagem": {"zoho": len(zoho or []), "mlabs": len(ml), "instagram": len(pub.get("instagram") or []), "facebook": len(pub.get("facebook") or [])}}

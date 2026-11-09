@@ -303,6 +303,8 @@ r = zplano({"c": {"aprov": APR, "aut": A}}, PZ, so_vazio)
 os.path.exists = _ex; fw.mlabs_pendentes = fw_ml
 ok("Trava: mesmo texto já agendado no mLabs na mesma rede -> não cria", not r["acoes"] and any("mLabs" in x and "ML1" in x for x in r["avisos"]), r)
 ok("Chave: Resumo de semanas diferentes não bate", fw.chave("RESUMO DA SEMANA\n1. Trump assina ordem sobre asilo") != fw.chave("RESUMO DA SEMANA\n1. Senado aprova orçamento"), "")
+ok("Chave: lista copiada só com o começo do texto continua batendo", fw.mesma(fw.chave("Gancho forte aqui, com uma frase longa o bastante para passar de sessenta letras. Corpo"), fw.chave("Gancho forte aqui, com uma frase longa o bastante para passar de sessenta letras. Corpo inteiro " + "y" * 300)), "")
+ok("Chave: começo curto demais não decide sozinho", not fw.mesma(fw.chave("Resumo"), fw.chave("Resumo da semana inteira com muito texto " * 5)), "")
 ok("Chave: legenda encurtada para o IG continua batendo", fw.chave("Gancho forte aqui.\n\nCorpo " + "x" * 300) == fw.chave("Gancho forte aqui. Corpo " + "x" * 200), "")
 
 # 13d. conferência diária (só lê)
