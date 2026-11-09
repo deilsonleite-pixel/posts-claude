@@ -13,13 +13,13 @@ Uso:
   fluxo_worker.py zoho-hora <central> <acao.json>                     troca só a hora de um post do Zoho (só quando o Deilson pedir)
   fluxo_worker.py zoho-listar cunha <AAAA-MM-DD>                       posts agendados no Zoho dessa data em diante
   fluxo_worker.py zoho-legenda cunha <acao.json>                      troca só as hashtags de um post agendado (5, regra 21/10)
-  fluxo_worker.py midia-cunha cunha <doc> <atualizado> <arquivos...>   sobe a arte da Central para cunhalaw/<doc>/ (JPG)
+  fluxo_worker.py midia-cunha cunha <doc> <atualizado> <arquivos...>   guarda a arte da Central (JPG) para subir direto ao Zoho
 
 dump_dir contém pecas/*.json e fluxo/*.json (ArtifactData list com out_dir).
 posts.json é a resposta crua de getScheduledPosts do Metricool ({"data":[...]}) ou a lista.
 Datas: tudo em America/Sao_Paulo ("AAAA-MM-DDTHH:MM").
 """
-import json, os, re, sys, glob, shutil, subprocess, time, unicodedata, datetime as dt
+import json, os, re, sys, glob, shutil, subprocess, tempfile, time, unicodedata, datetime as dt
 from zoneinfo import ZoneInfo
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
@@ -494,25 +494,78 @@ def jpeg_wh(b):
         i += 2 + int.from_bytes(b[i + 2:i + 4], "big")
     return 1080, 1350
 
-def zoho_midia(c, doc, p):
-    """Imagens da versão autorizada no repositório (cunhalaw/<id>/NN.jpg + versao.txt == atualizado)."""
-    import urllib.request
-    base = c["repo_raw"] + doc + "/"
-    n = len(p.get("slides") or []) or 1
-    st, ver = _get(base + "versao.txt")
-    if st != 200 or ver.strip() != (p.get("atualizado") or "").strip():
+def zoho_midia_dir(doc):
+    """Pasta local da arte da versão autorizada (NN.jpg + versao.txt). Não passa pelo GitHub: o Zoho recebe o arquivo direto."""
+    return os.path.join(os.environ.get("CENTRAIS_TMP") or os.path.join(tempfile.gettempdir(), "centrais"), "midia", doc)
+
+def zoho_upload(z, tok, caminho):
+    """POST /medias/upload (multipart, campo file). Devolve o dado do Zoho (file_path = id, width, height, file_size) ou None."""
+    import urllib.request, uuid
+    b = open(caminho, "rb").read()
+    sep = uuid.uuid4().hex
+    corpo = (f"--{sep}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{os.path.basename(caminho)}\"\r\n"
+             f"Content-Type: image/jpeg\r\n\r\n").encode() + b + f"\r\n--{sep}--\r\n".encode()
+    req = urllib.request.Request(z["api"] + "/medias/upload", method="POST", data=corpo,
+                                 headers={"Authorization": "Zoho-oauthtoken " + tok, "portal_id": z["portal_id"], "brand_id": z["brand_id"],
+                                          "content-type": "multipart/form-data; boundary=" + sep})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            d = (json.loads(r.read().decode() or "{}") or {}).get("data") or {}
+    except Exception:
         return None
+    return d if d.get("status") == "success" and d.get("file_path") else None
+
+def zoho_midia(c, doc, p):
+    """Imagens da versão autorizada, enviadas direto ao Zoho (sem GitHub, Deilson 09/11/2026).
+    A arte baixada da Central fica em zoho_midia_dir(doc) com versao.txt == "atualizado" da peça; cada JPG sobe uma vez
+    por versão (ids guardados em upload.json). Sem a arte local da versão certa, devolve None e o plano pede cunha_midia."""
+    pasta = zoho_midia_dir(doc)
+    n = len(p.get("slides") or []) or 1
+    try:
+        ver = open(os.path.join(pasta, "versao.txt")).read()
+    except Exception:
+        return None
+    atual = (p.get("atualizado") or "").strip()
+    arqs = [os.path.join(pasta, f"{i:02d}.jpg") for i in range(1, n + 1)]
+    if ver.strip() != atual or not all(os.path.isfile(a) for a in arqs):
+        return None
+    cache_f = os.path.join(pasta, "upload.json")
+    try:
+        cache = json.load(open(cache_f))
+    except Exception:
+        cache = {}
+    if cache.get("atualizado") != atual or len(cache.get("itens") or []) != n:
+        z = c["zoho"]
+        tok = zoho_token(z)
+        itens = []
+        for a in arqs:
+            d = zoho_upload(z, tok, a)
+            if not d:
+                return None
+            itens.append(d)
+        cache = {"atualizado": atual, "itens": itens, "em": now_iso()}
+        json.dump(cache, open(cache_f, "w"))
     out = []
-    for i in range(1, n + 1):
-        u = base + f"{i:02d}.jpg"
-        try:
-            with urllib.request.urlopen(u, timeout=30) as r:
-                b = r.read()
-        except Exception:
-            return None
-        w, h = jpeg_wh(b)
-        out.append({"file_path": u, "name": f"{doc}-{i:02d}.jpg", "type": "image", "format": "jpg", "size": len(b), "width": w, "height": h})
+    for i, d in enumerate(cache["itens"], 1):
+        out.append({"file_path": "/ViewProfilePicture.do?fileId=" + str(d["file_path"]), "name": f"{doc}-{i:02d}.jpg", "type": "image",
+                    "format": "jpg", "size": int(d.get("file_size") or 0), "width": int(d.get("width") or 0), "height": int(d.get("height") or 0)})
     return out
+
+def salvar_midia_local(doc, arquivos, versao):
+    """midia-cunha: grava a arte da Central (convertida para JPG) na pasta local da peça, com versao.txt = "atualizado".
+    Substitui o antigo commit e push em cunhalaw/<doc>/ no GitHub."""
+    from PIL import Image
+    pasta = zoho_midia_dir(doc)
+    if os.path.isdir(pasta):
+        shutil.rmtree(pasta)
+    os.makedirs(pasta, exist_ok=True)
+    out = []
+    for i, a in enumerate(arquivos, 1):
+        destino = os.path.join(pasta, f"{i:02d}.jpg")
+        Image.open(a).convert("RGB").save(destino, "JPEG", quality=90)
+        out.append(destino)
+    open(os.path.join(pasta, "versao.txt"), "w").write(versao)
+    return {"ok": bool(out), "arquivos": out, "pasta": pasta}
 
 ZOHO_MAX_PAG = 50
 
@@ -1443,7 +1496,7 @@ def main():
         r = publicar_midia(central, int(dump), rest[0], rest[1:])
     elif cmd == "midia-cunha":
         # midia-cunha cunha <doc> <atualizado> arquivo1 arquivo2 ...   (da raiz do repositório)
-        r = publicar_midia(central, 0, dump, rest[1:], versao=rest[0], jpg=True)
+        r = salvar_midia_local(dump, rest[1:], rest[0])
     elif cmd == "midia":
         r = midia(central, dump, rest[0])
     elif cmd == "limpar":
