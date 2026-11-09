@@ -19,7 +19,7 @@ O endereço de cada Central vem no texto da rotina (não fica neste repositório
 
 3. **Mídia do Marcelão (antes do plano).** Para cada peça de "pecas" com data entre hoje e hoje+30 cujo `fluxo/<id>.aprov.on` é true e cujo `fluxo/<id>.midia.rev` é diferente de `pecas.rev` (ou 1): se a peça tem arte final (`imgs` ou `img`), baixe esses arquivos com Artifact "read" (url da Central, paths = os caminhos, out_dir $D/arte/<id>) e rode `python3 rotinas/fluxo_worker.py publicar-midia marcelao <rev> <id> <arquivos na ordem>`. Se ok=true, grave em fluxo/<id> (get + update com if_version) `{"midia": <midia do resultado>}`. Sem arte final: pule (a Central mostra "aguardando imagens").
 
-4. **Plano.** `python3 rotinas/fluxo_worker.py plano <central> $D [--posts $D/posts.json]`.
+4. **Plano.** Na cunha, ANTES do plano: mLabs `list_scheduled_posts` (profileId ext_ODU3Njc3MA.qIkzLvvp0GbetUm__gFrr8, status "scheduled", limit 100, startDate hoje, endDate hoje+45, todas as páginas) e grave a resposta inteira em `$D/mlabs.json` ({"schedules":[...]}). É a TRAVA ANTI-DUPLICIDADE (Deilson 09/11/2026): o plano não cria nada que já esteja agendado com o mesmo texto na mesma rede no Zoho (qualquer horário) ou no mLabs, nem republica o que já saiu no IG/FB nos últimos 14 dias (marca Publicado). Se o mLabs não responder, NÃO rode o plano da cunha nesta rodada (anote no resumo). Depois: `python3 rotinas/fluxo_worker.py plano <central> $D [--posts $D/posts.json]`.
 
 5. **Marcas.** Para cada item: se "patch" não vazio, ArtifactData get fluxo/<doc> e update com if_version (conflito = pule). Se houver "evento" [acao, det]: ArtifactData set em "eventos", doc_id "rot-<AAAAMMDDHHMMSS>-<4 letras>", data {"item","acao","det","por":"rotina","em":<agora ISO Z>}.
 
@@ -40,4 +40,4 @@ O endereço de cada Central vem no texto da rotina (não fica neste repositório
 
 8. **Arquivos publicados** (só se houver "remover_do_artifact"): Artifact "read" da Central e publique de novo o mesmo arquivo com url da Central e files = {"<caminho>": null, ...}. Conflito: leia de novo e repita uma vez.
 
-9. **Aviso.** Só se esta rodada corrigiu hora no Zoho (zoho_hora: diga qual peça, de que hora para qual), gravou "falha" nova, "cancelando" novo na cunha (precisa cancelar no Zoho à mão) ou a plataforma ficou sem conexão: termine com uma mensagem curta e objetiva para o Deilson (o que aconteceu, em qual peça, o que fazer). Se tudo correu bem, termine só com "ok".
+9. **Aviso.** Só se a trava anti-duplicidade bloqueou algo (aviso "trava anti-duplicidade": diga a peça, a rede e onde já estava), se esta rodada corrigiu hora no Zoho (zoho_hora: diga qual peça, de que hora para qual), gravou "falha" nova, "cancelando" novo na cunha (precisa cancelar no Zoho à mão) ou a plataforma ficou sem conexão: termine com uma mensagem curta e objetiva para o Deilson (o que aconteceu, em qual peça, o que fazer). Se tudo correu bem, termine só com "ok".

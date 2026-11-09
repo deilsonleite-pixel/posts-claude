@@ -12,6 +12,7 @@ Uso:
   fluxo_worker.py migrar  <central> <dump_dir> [--posts posts.json]    cria fluxo/<id> para peças antigas
   fluxo_worker.py zoho-hora <central> <acao.json>                     troca só a hora de um post do Zoho (só quando o Deilson pedir)
   fluxo_worker.py zoho-listar cunha <AAAA-MM-DD>                       posts agendados no Zoho dessa data em diante
+  fluxo_worker.py conferir cunha <dump|-> [--mlabs mlabs.json]                anti-duplicidade: Zoho + mLabs + o que já saiu no IG/FB (só lê)
   fluxo_worker.py zoho-legenda cunha <acao.json>                      troca só as hashtags de um post agendado (5, regra 21/10)
   fluxo_worker.py midia-cunha cunha <doc> <atualizado> <arquivos...>   guarda a arte da Central (JPG) para subir direto ao Zoho
 
@@ -927,6 +928,20 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
                         patch[r] = plat_entry("enviado", ext={"id": pid, "url": "https://social.zoho.com"}, quando=q, rev=rev, aut=aut["id"], desde=now_iso(), tent=0)
                         marcas.append({"doc": doc, "patch": {}, "evento": ("enviado", f"{r} · {q} · já estava no {nome} (post {pid}); adotado, sem duplicar")})
                         continue
+                # TRAVA ANTI-DUPLICIDADE (Deilson 09/11/2026: "para que não haja mais erros de duplicidade").
+                # Antes de criar ou publicar: (a) já saiu no IG/FB com o mesmo texto nos últimos 14 dias -> marca Publicado
+                # e não manda de novo (caso EB-1A 06/11); (b) já há agendamento do mesmo texto na mesma rede no Zoho em
+                # QUALQUER horário, ou no mLabs (dump/mlabs.json) -> não cria e avisa (caso Mandamus 09/11).
+                bloq = trava_duplicidade(z, tok, zl, dump, r, tx)
+                if bloq:
+                    tipo, info = bloq
+                    if tipo == "publicado":
+                        patch[r] = plat_entry("concluido", ext={"id": info.get("id"), "url": info.get("link")}, quando=q, rev=rev, aut=aut["id"], sync=now_iso())
+                        marcas.append({"doc": doc, "patch": {}, "evento": ("concluido", f"{r} · já tinha saído em {info.get('quando')} ({info.get('link')}); não publicado de novo")})
+                        avisos.append(f"{doc} · {r}: já publicado em {info.get('quando')}; marcado Publicado, nada reenviado")
+                    else:
+                        avisos.append(f"{doc} · {r}: {info}; não cria (trava anti-duplicidade)")
+                    continue
                 med = zoho_midia(c, doc, p)
                 if not med:
                     if e0.get("st") != "aguardando_midia":
@@ -1188,6 +1203,229 @@ def zoho_criar(central, acao_path):
     e = plat_entry("falha", quando=a["quando"], rev=a["esperado"]["rev"], aut=a["aut"], desde=now_iso(), erro=f"FALHA NO AGENDAMENTO. Zoho recusou: {msg}", erro_cod=f"http_{code}", tent=a["claim"]["plat"][r0]["tent"])
     return {"ok": False, "avisar": True, "aviso": f"FALHA NO AGENDAMENTO: {a['doc']} · {', '.join(a['redes'])} · {a['quando']}. Zoho recusou: {msg}",
             "plat": {r: e for r in a["redes"]}, "evento": ["falha", f"FALHA NO AGENDAMENTO. Zoho recusou: {msg}"]}
+
+
+# ---------------- anti-duplicidade (Deilson 09/11/2026: "para que não haja mais erros de duplicidade") ----------------
+# Mesma peça = mesma primeira linha do texto (título/gancho), normalizada. Duplicata = mesma peça na MESMA rede
+# em dois agendamentos (Zoho e/ou mLabs), ou agendada de novo depois de já ter saído.
+REDE_MLABS = {"instagram": "instagram", "instagram_reels": "instagram", "instagram_story": "instagram_story", "facebook": "facebook",
+              "facebook_reels": "facebook", "tiktok_business": "tiktok", "tiktok": "tiktok", "youtube": "youtube", "threads": "threads"}
+REDE_ZOHO = {"facebookpage": "facebook", "instagram": "instagram", "youtube": "youtube", "tiktok": "tiktok", "threadsbyig": "threads", "twitter": "twitter"}
+
+def chave(txt):
+    """Identidade do conteúdo: começo do texto só com letras e números (150). Longo o bastante para o
+    Resumo da semana de uma semana não bater com o da outra; o mesmo texto encurtado para o IG continua batendo."""
+    return simpl(txt or "")[:150]
+
+def _graph(url):
+    st, txt = _get(url)
+    try:
+        return json.loads(txt) if st == 200 else None
+    except Exception:
+        return None
+
+def meta_publicados(dias=14):
+    """O que já saiu no Instagram e no Facebook da Cunha Law nos últimos `dias` (Graph API, IG_TOKEN do ambiente).
+    Devolve {"instagram": [...], "facebook": [...]}; rede que não respondeu fica None (não dá para afirmar nada)."""
+    import urllib.parse
+    tok = os.environ.get("IG_TOKEN")
+    out = {"instagram": None, "facebook": None}
+    if not tok:
+        return out
+    g = "https://graph.facebook.com/v21.0/"
+    desde = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=dias)
+    ig = CFG["centrais"]["cunha"].get("ig_user_id") or "17841459319979037"
+    def todas(url, campo):
+        """Todas as páginas até passar de `desde` (lista incompleta = None: não serve para decidir)."""
+        itens = []
+        for _ in range(20):
+            d = _graph(url)
+            if d is None:
+                return None
+            pag = d.get("data") or []
+            itens += pag
+            nxt = (d.get("paging") or {}).get("next")
+            velho = any((parse_iso((m.get(campo) or "").replace("+0000", "+00:00")) or desde) < desde for m in pag)
+            if not nxt or not pag or velho:
+                return itens
+            url = nxt
+        return None
+    d = todas(g + ig + "/media?fields=caption,timestamp,permalink&limit=100&access_token=" + urllib.parse.quote(tok), "timestamp")
+    if d is not None:
+        out["instagram"] = [{"chave": chave(m.get("caption")), "quando": m.get("timestamp"), "id": m.get("id"), "link": m.get("permalink"), "titulo": (m.get("caption") or "").split("\n")[0][:80]}
+                            for m in d if (parse_iso((m.get("timestamp") or "").replace("+0000", "+00:00")) or desde) >= desde]
+    acc = _graph(g + "me/accounts?fields=id,access_token&access_token=" + urllib.parse.quote(tok))
+    pg = ((acc or {}).get("data") or [{}])[0]
+    if pg.get("access_token"):
+        d = todas(g + pg["id"] + "/posts?fields=message,created_time,permalink_url&limit=100&access_token=" + urllib.parse.quote(pg["access_token"]), "created_time")
+        if d is not None:
+            out["facebook"] = [{"chave": chave(m.get("message")), "quando": m.get("created_time"), "id": m.get("id"), "link": m.get("permalink_url"), "titulo": (m.get("message") or "").split("\n")[0][:80]}
+                               for m in d if (parse_iso((m.get("created_time") or "").replace("+0000", "+00:00")) or desde) >= desde]
+    return out
+
+def ja_publicado(publicados, rede, texto):
+    """Item já publicado nessa rede com o mesmo começo de texto, ou None."""
+    k = chave(texto)
+    if not k or rede not in ("instagram", "facebook"):
+        return None
+    return next((m for m in (publicados.get(rede) or []) if m["chave"] == k), None)
+
+def zoho_pendentes(z, tok, lista=None):
+    """Agendamentos do Zoho por rede (sem repetição de post_id: a paginação repete posts), com a chave do texto."""
+    lista = zoho_agendados(z, tok) if lista is None else lista
+    if lista is None:
+        return None
+    out, vistos = [], set()
+    for p in lista:
+        pid = str(p.get("post_id") or p.get("id") or "")
+        if not pid or pid in vistos:
+            continue
+        vistos.add(pid)
+        txt, redes = zoho_texto(p), zoho_redes_do_post(p)
+        if not txt or not redes:
+            code, js = zoho_req(z, tok, "GET", f"/posts/schedules/{pid}")
+            d = (js or {}).get("data") if code == 200 else None
+            if not d:
+                return None
+            d = d[0] if isinstance(d, list) else d
+            txt, redes = zoho_texto(d) or txt, zoho_redes_do_post(d) or redes
+        try:
+            st = int(p.get("schedule_time") or 0)
+        except Exception:
+            st = 0
+        q = dt.datetime.fromtimestamp(st / 1000, SP).strftime("%Y-%m-%dT%H:%M") if st else ""
+        for rz in sorted(redes):
+            out.append({"origem": "zoho", "id": pid, "rede": REDE_ZOHO.get(rz, rz), "quando": q, "chave": chave(txt), "titulo": txt.split("\n")[0][:80]})
+    return out
+
+def trava_duplicidade(z, tok, zl, dump, rede, texto):
+    """None = pode criar. ("publicado", item) = já saiu nessa rede. ("bloqueio", motivo) = não criar nesta rodada."""
+    k = chave(texto)
+    if not k:
+        return None
+    if rede in ("instagram", "facebook"):
+        if "pub" not in zl:
+            zl["pub"] = meta_publicados()
+        if zl["pub"].get(rede) is None:
+            return ("bloqueio", f"não consegui ler o que já saiu no {rede} (API Meta); sem essa conferência não envio")
+        m = next((y for y in zl["pub"][rede] if y["chave"] == k), None)
+        if m:
+            return ("publicado", m)
+    if "l" not in zl:
+        zl["l"] = zoho_agendados(z, tok)
+    if zl["l"] is None:
+        return ("bloqueio", "lista de agendamentos do Zoho indisponível")
+    rz, vistos = z["redes"].get(rede, rede), set()
+    for p in zl["l"]:
+        pid = str(p.get("post_id") or p.get("id") or "")
+        if not pid or pid in vistos:
+            continue
+        vistos.add(pid)
+        txt, redes = zoho_texto(p), zoho_redes_do_post(p)
+        if txt and chave(txt) != k:
+            continue
+        if not txt or not redes:
+            code, js = zoho_req(z, tok, "GET", f"/posts/schedules/{pid}")
+            d = (js or {}).get("data") if code == 200 else None
+            d = d[0] if isinstance(d, list) and d else d
+            if isinstance(d, dict):
+                txt, redes = zoho_texto(d) or txt, zoho_redes_do_post(d) or redes
+            if not txt:
+                continue   # sem texto nem detalhe: não é post da Central (reel/vídeo à mão); a conferência diária cobre
+            if chave(txt) != k:
+                continue
+            if not redes:
+                return ("bloqueio", f"há agendamento no Zoho com o mesmo texto (post {pid}), mas não consegui ver a rede")
+        if rz in redes:
+            try:
+                q = dt.datetime.fromtimestamp(int(p.get("schedule_time") or 0) / 1000, SP).strftime("%d/%m %H:%M")
+            except Exception:
+                q = "?"
+            return ("bloqueio", f"o mesmo texto já está agendado no Zoho para {q} Brasília (post {pid})")
+    if "ml" not in zl:
+        f = os.path.join(dump, "mlabs.json")
+        zl["ml"] = mlabs_pendentes(f) if os.path.exists(f) else []
+    x = next((y for y in zl["ml"] if y["rede"] == rede and y["chave"] == k), None)
+    if x:
+        return ("bloqueio", f"o mesmo texto já está agendado no mLabs para {x['quando']} (id {x['id']})")
+    return None
+
+def mlabs_pendentes(path):
+    """Agendados do mLabs a partir da resposta de list_scheduled_posts (status scheduled) salva em JSON."""
+    d = json.load(open(path))
+    itens = d.get("schedules") if isinstance(d, dict) else d
+    out = []
+    for m in itens or []:
+        if (m.get("status") or "scheduled") != "scheduled":
+            continue
+        q = parse_iso(m.get("scheduledAt"))
+        out.append({"origem": "mlabs", "id": m.get("id"), "rede": REDE_MLABS.get(m.get("channelSourceKey"), m.get("channelSourceKey")),
+                    "quando": q.astimezone(SP).strftime("%Y-%m-%dT%H:%M") if q else "", "chave": chave(m.get("content")),
+                    "titulo": (m.get("content") or "").split("\n")[0][:80]})
+    return out
+
+def resumo_semana(dump, hoje=None):
+    """Segunda-feira: o carrossel Resumo da semana de hoje existe na Central e em que pé está (Deilson 09/11/2026:
+    ficou sem sair de 02/11 a 09/11 sem ninguém avisar). Outros dias: None."""
+    hoje = hoje or AGORA.date()
+    if hoje.weekday() != 0 or not dump or not os.path.isdir(os.path.join(dump, "pecas")):
+        return None
+    d = hoje.strftime("%Y-%m-%d")
+    docs = [os.path.basename(f)[:-5] for f in glob.glob(os.path.join(dump, "pecas", d + "-resumo-semana*.json"))]
+    if not docs:
+        return {"ok": False, "msg": f"Resumo da semana de {hoje.strftime('%d/%m')} NÃO existe na Central"}
+    doc = sorted(docs)[-1]
+    try:
+        f = json.load(open(os.path.join(dump, "fluxo", doc + ".json")))
+    except Exception:
+        f = {}
+    plat = {r: (e or {}).get("st") for r, e in (f.get("plat") or {}).items()}
+    if any(v in ("agendado", "enviado", "concluido") for v in plat.values()):
+        return {"ok": True, "doc": doc, "msg": "Resumo da semana agendado/publicado", "plat": plat}
+    return {"ok": True, "doc": doc, "msg": "Resumo da semana pronto na Central, aguardando o Pode postar" if not f.get("aut") else "Resumo autorizado, ainda sem agendamento", "plat": plat}
+
+def conferir(central, mlabs_path=None, publicados=None, zoho=None, dump=None):
+    """Conferência anti-duplicidade: Zoho + mLabs (agendados) + Instagram/Facebook (publicados 14 dias).
+    Não muda nada: só aponta (1) mesma peça agendada 2x na mesma rede, (2) agendada de novo depois de sair,
+    (3) publicada 2x na mesma rede. Fonte que não respondeu vai em 'falhas' (a conferência não fica 'ok')."""
+    c = CFG["centrais"][central]
+    falhas = []
+    if zoho is None:
+        z = c["zoho"]
+        zoho = zoho_pendentes(z, zoho_token(z))
+    if zoho is None:
+        falhas.append("Zoho não devolveu a lista completa de agendados")
+    ml = []
+    if mlabs_path:
+        ml = mlabs_pendentes(mlabs_path)
+    else:
+        falhas.append("lista do mLabs não informada (--mlabs)")
+    pub = publicados if publicados is not None else meta_publicados()
+    for r in ("instagram", "facebook"):
+        if pub.get(r) is None:
+            falhas.append(f"{r} publicado não respondeu")
+    pend = (zoho or []) + ml
+    grupos = {}
+    for x in pend:
+        if x["chave"]:
+            grupos.setdefault((x["rede"], x["chave"]), []).append(x)
+    dup = [{"rede": k[0], "titulo": v[0]["titulo"], "agendamentos": [{"origem": y["origem"], "id": y["id"], "quando": y["quando"]} for y in v]}
+           for k, v in sorted(grupos.items()) if len(v) > 1]
+    ja = []
+    for x in pend:
+        m = next((y for y in (pub.get(x["rede"]) or []) if x["chave"] and y["chave"] == x["chave"]), None)
+        if m:
+            ja.append({"rede": x["rede"], "titulo": x["titulo"], "agendado": {"origem": x["origem"], "id": x["id"], "quando": x["quando"]}, "publicado": m})
+    dois = []
+    for r in ("instagram", "facebook"):
+        g = {}
+        for m in pub.get(r) or []:
+            if m["chave"]:
+                g.setdefault(m["chave"], []).append(m)
+        dois += [{"rede": r, "titulo": v[0]["titulo"], "publicados": v} for v in g.values() if len(v) > 1]
+    rs = resumo_semana(dump)
+    return {"ok": not falhas and not dup and not ja and not dois and (rs or {}).get("ok", True), "falhas": falhas, "resumo_semana": rs, "duplicatas_agendadas": dup, "agendado_ja_publicado": ja,
+            "publicado_2x": dois, "contagem": {"zoho": len(zoho or []), "mlabs": len(ml), "instagram": len(pub.get("instagram") or []), "facebook": len(pub.get("facebook") or [])}}
 
 # ---------------- mídia ----------------
 def slug_of(doc):
@@ -1486,6 +1724,9 @@ def main():
     elif cmd == "zoho-listar":
         # zoho-listar cunha <desde AAAA-MM-DD>
         r = zoho_listar(central, dump)
+    elif cmd == "conferir":
+        # conferir cunha - [--mlabs mlabs.json]   (anti-duplicidade; só lê)
+        r = conferir(central, opt.get("mlabs"), dump=None if dump == "-" else dump)
     elif cmd == "zoho-legenda":
         # zoho-legenda cunha <acao.json>
         r = zoho_legenda(central, dump)
