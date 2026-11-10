@@ -6,7 +6,7 @@ Regras (ver REGRAS-DIAGRAMACAO.md, parte Imagem):
  I3 foto preenche: a foto vai de borda a borda na largura e ocupa >= 45% da área da arte
  I4 rosto livre: nenhum texto, etiqueta ou avatar sobre um rosto (com folga de 6%)
  I5 rosto inteiro: rosto não cortado pela borda da arte nem pela borda da foto
- I6 pessoa pública (--pessoa): rosto principal com altura >= 11% da arte (>= ~150 px) — foto pequena/distante reprova
+ I6 pessoa pública (--pessoa): rosto principal com altura >= 14% da arte (>= ~190 px), fácil de reconhecer — foto pequena/distante reprova
  I7 exposição: no máximo 2% de pixels estourados (>= 250) na área da foto
 """
 import json,sys,os,cv2,numpy as np
@@ -41,7 +41,7 @@ for (x,y,w,h) in rostos:
     if f['x']<x<f['x']+f['w'] and f['y']<y<f['y']+f['h'] and y+h>f['y']+f['h']+2: falhas.append('I5 rosto cortado pela borda da foto')
 if pessoa:
   if not rostos: falhas.append('I6 notícia de pessoa pública sem o rosto da pessoa na arte')
-  elif max(h for *_,h in rostos)<0.11*H: falhas.append(f"I6 rosto pequeno: {max(h for *_,h in rostos)} px de altura (mín. {int(0.11*H)}): foto mais próxima ou maior")
+  elif max(h for *_,h in rostos)<0.14*H: falhas.append(f"I6 rosto pequeno: {max(h for *_,h in rostos)} px de altura (mín. {int(0.14*H)}): foto mais próxima ou maior")
 for f in fotos[:1]:
   roi=cv2.cvtColor(img[max(0,f['y']):f['y']+f['h'],max(0,f['x']):f['x']+f['w']],cv2.COLOR_BGR2GRAY)
   if roi.size and (roi>=250).mean()>0.02: falhas.append(f"I7 {100*(roi>=250).mean():.0f}% de pixels estourados na foto")

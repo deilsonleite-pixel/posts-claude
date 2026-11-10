@@ -55,11 +55,26 @@ Versão de 04/11/2026, pedida pelo Deilson ("revise todo o conhecimento de diagr
 | I3 | A foto preenche: vai de borda a borda na largura e ocupa no mínimo 45% da arte. No modelo, ela vai do topo até 140 px abaixo do início do texto, com um degradê por baixo. Nada de retrato pequeno numa caixa |
 | I4 | Nenhum texto, etiqueta ou avatar sobre o rosto (com folga) |
 | I5 | Rosto inteiro: sem corte pela borda da arte nem pela borda da foto |
-| I6 | Pessoa pública: rosto com no mínimo 11% da altura da arte (cerca de 150 px). O `foco.py --recortar` busca cerca de 33% da área da foto, em meio corpo, como foto de imprensa |
+| I6 | Pessoa pública: rosto com no mínimo 14% da altura da arte (cerca de 190 px), bem enquadrado e fácil de reconhecer. Isso vale principalmente para figuras como Trump. O `foco.py --recortar` busca cerca de 33% da área da foto, em meio corpo, como foto de imprensa |
 | I7 | Exposição: até 2% de pixels estourados na foto. Nunca clarear a foto. Para mostrar mais a foto, reduza a camada azul ([[design-regras-foto]]) |
 
 - Enquadramento: o rosto fica a cerca de 60% da largura (o avatar está à esquerda) e a cerca de 46% da altura da área da foto. É isso que o `foco.py` faz.
 - Sem recorte de objeto nem montagem de duas fotos ([[design-sem-recorte-montagem]]).
+
+## Foto do acontecimento e foto repetida
+
+Regra do Deilson de 10/11/2026. Ela nasceu de três peças sobre o secretário que assumiu outro cargo, todas com a mesma foto, "parecendo que é o mesmo post".
+
+| Código | Regra |
+|---|---|
+| F1 | **Nunca a mesma foto em duas peças do mesmo acontecimento**, nem em peças próximas. Isso vale também para a mesma foto com outro recorte ou outro zoom. O `render.js --evento=<slug> --peca=<id>` compara com o registro de fotos usadas e reprova. |
+| F2 | **A foto é do momento exato do assunto.** Entrevista pede foto daquela entrevista. Coletiva ou discurso pede foto daquela coletiva ou discurso. Ato ou decisão pede foto do ato. Retrato oficial ou foto de outro evento só entra quando não existe foto do momento, e isso precisa ser avisado na entrega. |
+| F3 | **Várias peças do mesmo acontecimento** (um post e um carrossel com pontos diferentes da mesma coletiva ou entrevista): fotos diferentes do mesmo dia, com outro ângulo, outra posição do corpo, plano mais aberto ou mais fechado. Monte a folha de candidatas do evento uma vez e distribua uma foto por peça. |
+| F4 | **Peça sobre uma pessoa citada no acontecimento** (ex.: quem assumiu um cargo): foto dessa pessoa em outra coletiva ou outro evento, diferente da usada nas outras peças. |
+| F5 | **Rosto em destaque** (I6, 14% ou mais da altura). A pessoa tem de ser reconhecida de relance, sem ler o texto. |
+
+**Como registrar:** na versão final da arte, rode `node render.js ... --evento=<slug> --peca=<id> --momento="coletiva 09/11, Casa Branca" --registrar`. A foto entra em `/mnt/project-files/cunha-law/design/fotos-usadas/` (indice.json). Use o mesmo slug para todas as peças do acontecimento, ex.: `2026-11-09-trump-coletiva-acordo`.
+A comparação é pela própria foto (ORB). A mesma foto recortada é pega. Fotos diferentes do mesmo palco passam. O registro começou em 10/11/2026, então peças anteriores não estão nele.
 
 ## Elementos visuais: DNA da Cunha Law, nada de componente genérico
 
