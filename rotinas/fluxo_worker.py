@@ -14,6 +14,9 @@ Uso:
   fluxo_worker.py zoho-listar cunha <AAAA-MM-DD>                       posts agendados no Zoho dessa data em diante
   fluxo_worker.py zoho-legenda cunha <acao.json>                      troca só as hashtags de um post agendado (5, regra 21/10)
   fluxo_worker.py midia-cunha cunha <doc> <atualizado> <arquivos...>   guarda a arte da Central (JPG) para subir direto ao Zoho
+  fluxo_worker.py plano-b-conferir cunha <acao.json> <mlabs.json>    plano B: a peça já saiu/está agendada em algum lugar?
+  fluxo_worker.py plano-b-gravar cunha <acao.json> <resultado.json>   plano B: plat (plataforma mlabs + id), evento e aviso
+  fluxo_worker.py plano-b-saida cunha <dump_dir>                      plano B: agendados no mLabs com horário passado, para conferir
 
 dump_dir contém pecas/*.json e fluxo/*.json (ArtifactData list com out_dir).
 posts.json é a resposta crua de getScheduledPosts do Metricool ({"data":[...]}) ou a lista.
@@ -723,6 +726,18 @@ def hashtags_5(texto):
     linhas = texto.rstrip().split("\n")
     if not linhas or not linhas[-1].strip().startswith("#"):
         return texto
+    # bloco de hashtags repetido no fim (legenda com hashtags + campo hashtags, 12/11/2026): junta num só, sem repetir
+    fim = len(linhas)
+    while fim > 0 and (not linhas[fim - 1].strip() or all(t.startswith("#") for t in linhas[fim - 1].split())):
+        fim -= 1
+    blocos = [l for l in linhas[fim:] if l.strip()]
+    if len(blocos) > 1:
+        unicas = list(dict.fromkeys(t for l in blocos for t in l.split()))
+        corpo = linhas[:fim]
+        while corpo and not corpo[-1].strip():
+            corpo.pop()
+        linhas = corpo + ([""] if corpo else []) + [" ".join(unicas)]
+        texto = "\n".join(linhas)
     tags = linhas[-1].split()
     if len(tags) <= 5 or not all(t.startswith("#") for t in tags):
         return texto
@@ -738,6 +753,176 @@ def limite_semana(hoje=None):
     if d.weekday() >= 4:
         fim += dt.timedelta(days=7)
     return fim.strftime("%Y-%m-%d")
+
+# ---------------- Plano B: mLabs (Deilson 13/11/2026) ----------------
+# Post e carrossel saem pelo Zoho. Se o Zoho falhar de vez (depois das 2 tentativas automáticas, envio sem
+# confirmação, rede fora da integração ou recusa que repetir não resolve), a rede que falhou sai pelo mLabs, na mesma
+# data e hora (ou na hora, se já passou). Antes, confere Zoho + mLabs + Instagram/Facebook publicados para não duplicar.
+# Substitui a API do Instagram como emergência. Quem chama o mLabs é o Claude da fila (MCP); o script decide e confere.
+PLANO_B_NAO = ("retentar", "horario_passou", "legenda_longa")   # não é falha definitiva do Zoho
+PLANO_B_ESPERA_MIN = 30        # "enviando" pelo mLabs sem id mais velho que isso: confere e tenta de novo
+PLANO_B_FOLGA_MIN = 5          # o mLabs só agenda no futuro: "na hora" = agora + 5 min
+
+def texto_rede(p, aut, r):
+    """Mesmo texto que o Zoho receberia nessa rede (curto no Threads/X, 5 hashtags, até 2.200 no Instagram)."""
+    texto = (aut.get("snap") or {}).get("texto") or ((p.get("legenda") or "") + ("\n\n" + p["hashtags"] if p.get("hashtags") else ""))
+    tx = texto_curto(p, LIMITE_TEXTO[r]) if r in LIMITE_TEXTO else hashtags_5(texto)
+    if r == "instagram" and _tam(tx) > LIMITE_IG:
+        tx, _ = texto_ig(tx, p)
+    return tx
+
+def chave_texto(t, n=150):
+    return norm(t)[:n]
+
+def plano_b_acao(c, doc, p, f, aut, rev, r, e, want0, midia_doc, acoes):
+    """Ação mlabs_plano_b para a rede r, ou None. e = plat.<r> já com o patch desta rodada."""
+    mb = c.get("mlabs") or {}
+    canal = (mb.get("canais") or {}).get(r)
+    if not (mb.get("profile_id") and canal) or not e or r not in want0 or e.get("aut") != aut["id"]:
+        return None
+    if e.get("plataforma") == "mlabs":
+        # já foi para o mLabs: só volta a agir se ficou "enviando" sem id (resultado incerto)
+        idade = (dt.datetime.now(dt.timezone.utc) - (parse_iso(e.get("desde") or "") or dt.datetime.now(dt.timezone.utc))).total_seconds() / 60
+        if not (e.get("st") == "enviando" and not (e.get("ext") or {}).get("id") and idade >= PLANO_B_ESPERA_MIN):
+            return None
+    elif e.get("st") != "falha" or e.get("erro_cod") in PLANO_B_NAO:
+        return None
+    pasta = zoho_midia_dir(doc)
+    n = len(p.get("slides") or []) or 1
+    arqs = [os.path.join(pasta, f"{i:02d}.jpg") for i in range(1, n + 1)]
+    try:
+        ver = open(os.path.join(pasta, "versao.txt")).read().strip()
+    except Exception:
+        ver = ""
+    if ver != (p.get("atualizado") or "").strip() or not all(os.path.isfile(a) for a in arqs):
+        if doc not in midia_doc:
+            midia_doc.add(doc)
+            acoes.append(cunha_midia_acao(doc, p))
+        return None
+    q = e.get("quando") or want0[r]
+    alvo = max(q_dt(q), AGORA + dt.timedelta(minutes=PLANO_B_FOLGA_MIN))
+    agora = alvo > q_dt(q)
+    tx = texto_rede(p, aut, r)
+    zoho_id = None if e.get("plataforma") == "mlabs" else (e.get("ext") or {}).get("id")
+    return {"tipo": "mlabs_plano_b", "doc": doc, "rede": r, "canal": canal, "profileId": mb["profile_id"],
+            "quando": q, "agora": agora, "scheduledAt": alvo.isoformat(timespec="minutes"),
+            "texto": tx, "chave": chave_texto(tx), "arquivos": arqs, "zoho_id": zoho_id,
+            "erro_zoho": e.get("erro") if e.get("plataforma") != "mlabs" else None,
+            "titulo": (aut.get("snap") or {}).get("titulo") or p.get("titulo") or doc,
+            "requestId": re.sub(r"[^a-zA-Z0-9_-]", "-", f"planoB-{doc}-{r}-{aut['id']}")[:128],
+            "aut": aut["id"], "rev": rev,
+            "claim": {"plat": {r: plat_entry("enviando", plataforma="mlabs", quando=q, rev=rev, aut=aut["id"], desde=now_iso(),
+                                            tent=1, zoho=({"id": zoho_id, "erro": e.get("erro")} if zoho_id or e.get("erro") else e.get("zoho")))}}}
+
+def _graph(path, tok):
+    import urllib.request, urllib.parse
+    url = "https://graph.facebook.com/v21.0/" + path + ("&" if "?" in path else "?") + "access_token=" + urllib.parse.quote(tok)
+    try:
+        with urllib.request.urlopen(url, timeout=30) as r:
+            return json.loads(r.read().decode() or "{}")
+    except Exception as ex:
+        return {"erro": str(ex)[:200]}
+
+def plano_b_conferir(central, acao_path, mlabs_path):
+    """Antes do plano B: a peça já saiu ou já está agendada em algum lugar? Confere Zoho (o post que falhou),
+    mLabs (agendados e publicados, salvos pelo Claude em mlabs.json) e o que está publicado no Instagram/Facebook.
+    Devolve pode_criar=False com o que achou (e o plat para gravar) se já existir; dúvida = não cria."""
+    a = json.load(open(acao_path))
+    c = CFG["centrais"][central]
+    chave, r = a["chave"], a["rede"]
+    achados, duvidas = [], []
+    # 1) Zoho: o post que falhou acabou saindo?
+    if a.get("zoho_id"):
+        z = c["zoho"]
+        try:
+            code, js = zoho_req(z, zoho_token(z), "GET", f"/posts/publish/{a['zoho_id']}")
+            linha = next((x for x in (js.get("data") or []) if x.get("network") == z["redes"].get(r, r)), None)
+            if (linha or {}).get("status") == "published":
+                achados.append({"onde": "zoho", "id": a["zoho_id"], "st": "concluido"})
+        except Exception as ex:
+            duvidas.append(f"Zoho sem resposta ({str(ex)[:80]})")
+    # 2) mLabs: lista salva pelo Claude (list_scheduled_posts + list_published_posts do perfil, sem filtro de status)
+    try:
+        ml = json.load(open(mlabs_path))
+        itens = []
+        for bloco in (ml if isinstance(ml, list) else [ml]):
+            if isinstance(bloco, dict):
+                itens += bloco.get("schedules") or bloco.get("posts") or bloco.get("data") or ([bloco] if bloco.get("content") is not None else [])
+            elif isinstance(bloco, list):
+                itens += bloco
+        for x in itens:
+            canal = (x.get("channelSourceKey") or x.get("channel") or "").lower()
+            href = x.get("href") or ""
+            if not canal and href:   # list_published_posts não traz a key do canal: vem do link do post
+                canal = "instagram" if "instagram.com" in href else "threads" if "threads." in href else "facebook" if "facebook.com" in href else ""
+            if canal == a["canal"] and chave_texto(x.get("content") or x.get("name") or x.get("text") or x.get("caption") or "") == chave:
+                st = (x.get("status") or ("published" if href or x.get("date") else "")).lower()
+                if st in ("failed", "draft", "deleted"):
+                    continue
+                achados.append({"onde": "mlabs", "id": x.get("id"), "st": "concluido" if st == "published" else "agendado",
+                                "url": (x.get("scheduleLink") or {}).get("url") or href or None, "scheduledAt": x.get("scheduledAt") or x.get("date")})
+    except Exception as ex:
+        duvidas.append(f"lista do mLabs ilegível ({str(ex)[:80]})")
+    # 3) publicado de verdade no Instagram / Facebook (últimos 25 posts)
+    tok = os.environ.get("IG_TOKEN")
+    if tok and r in ("instagram", "facebook"):
+        if r == "instagram":
+            js = _graph(f"{c.get('ig_user_id', '17841459319979037')}/media?fields=caption,permalink,timestamp&limit=25", tok)
+            lista = [(x.get("caption") or "", x.get("permalink")) for x in js.get("data") or []]
+        else:
+            pg = c.get("fb_page_id", "219015837972386")
+            pt = (_graph(f"{pg}?fields=access_token", tok) or {}).get("access_token")
+            js = _graph(f"{pg}/posts?fields=message,permalink_url&limit=25", pt) if pt else {"erro": "sem token da página"}
+            lista = [(x.get("message") or "", x.get("permalink_url")) for x in js.get("data") or []]
+        if js.get("erro") or js.get("error"):
+            duvidas.append(f"{r}: não deu para ler os posts publicados ({str(js.get('erro') or js.get('error'))[:80]})")
+        for cap, link in lista:
+            if chave_texto(cap) == chave:
+                achados.append({"onde": r, "st": "concluido", "url": link})
+    pode = not achados and not duvidas
+    plat = None
+    if achados:
+        x = achados[0]
+        plat = plat_entry(x["st"], quando=a["quando"], rev=a["rev"], aut=a["aut"], sync=now_iso(),
+                          plataforma="mlabs" if x["onde"] == "mlabs" else ("zoho" if x["onde"] == "zoho" else None),
+                          ext={"id": x.get("id"), "url": x.get("url")} if x.get("id") or x.get("url") else None)
+    return {"ok": True, "pode_criar": pode, "achados": achados, "duvidas": duvidas, "plat": {r: plat} if plat else None,
+            "evento": ["plano_b_ja_existia", f"{r}: já existia ({achados[0]['onde']}); plano B não criou nada"] if achados else None}
+
+def plano_b_gravar(central, acao_path, res_path):
+    """Depois do create_post do mLabs: plat da rede (plataforma mlabs + id), evento e a linha de aviso ao Deilson."""
+    a = json.load(open(acao_path))
+    res = json.load(open(res_path))
+    r = a["rede"]
+    sch = [x for x in (res.get("schedules") or []) if (x.get("channelSourceKey") or "").lower() == a["canal"]] or (res.get("schedules") or [])
+    x = sch[0] if sch else {}
+    claim = (a.get("claim") or {}).get("plat", {}).get(r) or {}
+    st_ml = (x.get("status") or "").lower()
+    if not x.get("id") or st_ml in ("failed", "draft"):
+        e = dict(claim, st="falha", erro="Zoho e mLabs falharam nesta rede: publique à mão no app.", erro_cod="plano_b_falhou", sync=now_iso(), desde=None)
+        return {"ok": False, "plat": {r: e}, "evento": ["falha", f"{r} · plano B pelo mLabs falhou ({str(res)[:150]})"], "avisar": True,
+                "aviso": f"⚠️ \"{a['titulo']}\" não saiu no {r.capitalize()}: o Zoho e o mLabs falharam. Publique à mão no app."}
+    quando_ml = (parse_iso(x.get("scheduledAt") or "") or q_dt(a["quando"])).astimezone(SP)
+    e = dict(claim, st="agendado", ext={"id": x["id"], "url": (x.get("scheduleLink") or {}).get("url")}, sync=now_iso(), desde=None,
+             quando=quando_ml.strftime("%Y-%m-%dT%H:%M"),
+             erro=None, erro_cod=None, nota=f"Saiu pelo mLabs (plano B): o Zoho falhou nesta rede.")
+    hora = quando_ml.strftime("%d/%m às %Hh%M").replace("h00", "h")
+    rede = {"instagram": "Instagram", "facebook": "Facebook", "threads": "Threads"}.get(r, r)
+    return {"ok": True, "plat": {r: e},
+            "evento": ["plano_b", f"{r} · Zoho falhou; {'publicado na hora' if a.get('agora') else 'agendado'} pelo mLabs para {quando_ml.strftime('%Y-%m-%dT%H:%M')} (Brasília) · mLabs {x['id']}"],
+            "avisar": True,
+            "aviso": f"\"{a['titulo']}\": o Zoho falhou no {rede}, então {'saiu pelo mLabs agora' if a.get('agora') else 'agendei pelo mLabs'} ({hora}, Brasília)."}
+
+def plano_b_conferir_saida(central, dump):
+    """mlabs agendado pelo plano B com horário já passado (10+ min): lista para o Claude conferir no mLabs (get_post)."""
+    fluxo = load_dir(os.path.join(dump, "fluxo"))
+    out = []
+    for doc, f in sorted(fluxo.items()):
+        for r, e in (f.get("plat") or {}).items():
+            if e and e.get("plataforma") == "mlabs" and e.get("st") == "agendado" and (e.get("ext") or {}).get("id") \
+                    and e.get("quando") and q_dt(e["quando"]) < AGORA - dt.timedelta(minutes=10):
+                out.append({"doc": doc, "rede": r, "scheduleId": e["ext"]["id"]})
+    return {"ok": True, "conferir": out}
 
 def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
     z = c["zoho"]
@@ -777,10 +962,17 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
                 if vale or (plat.get(r) or {}).get("aut") == aut["id"]:
                     want[r] = base_q
         patch = {}
+        want0 = dict(want)
         # 1) o que já foi mandado ao Zoho: consultar o status de verdade
         vistos = {}
         for r, e in plat.items():
             if not e:
+                continue
+            # plano B (Deilson 13/11/2026): rede que saiu pelo mLabs não existe no Zoho. Não consulta o Zoho
+            # (o 404 viraria "cancelado_ext") e não cria de novo no Zoho com a mesma autorização.
+            if e.get("plataforma") == "mlabs":
+                if aut and e.get("aut") == aut["id"]:
+                    want.pop(r, None)
                 continue
             pid = (e.get("ext") or {}).get("id")
             # já saiu (concluido/publicado): nada mais a fazer nessa rede; sem isto a etapa 2 acusava "horário passou"
@@ -947,6 +1139,13 @@ def plano_zoho(central, c, pecas, fluxo, dump, sem_conexao=None):
                               "endpoint": endpoint, "agora": urgente,
                               "esperado": {"aut_id": aut["id"], "rev": rev},
                               "claim": {"plat": {r: plat_entry("enviando", quando=q, rev=rev, aut=aut["id"], desde=now_iso(), tent=(e0.get("tent") or 0) + 1 if e0.get("aut") == aut["id"] else 1, auto=e0.get("auto") or 0)}}})
+        # 2b) plano B pelo mLabs (Deilson 13/11/2026): post/carrossel que o Zoho não conseguiu publicar de vez
+        if aut and p and p.get("tipo") in ("post", "carrossel"):
+            for r, e in sorted({**plat, **patch}.items()):
+                acao = plano_b_acao(c, doc, p, f, aut, rev, r, e, want0, midia_doc, acoes)
+                if acao:
+                    acoes.append(acao)
+                    avisos.append(f"{doc} · {r}: {nome} falhou de vez ({(e or {}).get('erro') or 'sem detalhe'}); plano B pelo mLabs")
         if patch:
             marcas.append({"doc": doc, "patch": {"plat": patch}})
         if exc and exc.get("estado") != "concluido":
@@ -1491,6 +1690,15 @@ def main():
         r = zoho_legenda(central, dump)
     elif cmd == "zoho-hora":
         r = zoho_hora(central, dump)
+    elif cmd == "plano-b-conferir":
+        # plano-b-conferir cunha <acao.json> <mlabs.json>
+        r = plano_b_conferir(central, dump, rest[0])
+    elif cmd == "plano-b-gravar":
+        # plano-b-gravar cunha <acao.json> <resultado_create_post.json>
+        r = plano_b_gravar(central, dump, rest[0])
+    elif cmd == "plano-b-saida":
+        # plano-b-saida cunha <dump_dir>
+        r = plano_b_conferir_saida(central, dump)
     elif cmd == "publicar-midia":
         # publicar-midia <central> <rev> <doc> arquivo1 arquivo2 ...
         r = publicar_midia(central, int(dump), rest[0], rest[1:])

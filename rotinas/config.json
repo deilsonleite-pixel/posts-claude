@@ -100,7 +100,14 @@
       "redes_extras": [
         "threads"
       ],
-      "redes_extras_obs": "twitter (X @leofaiad) suspenso em 27/10/2026 até o Deilson decidir se posta no perfil pessoal do Leopoldo; para religar, voltar \"twitter\" aqui."
+      "redes_extras_obs": "twitter (X @leofaiad) suspenso em 27/10/2026 até o Deilson decidir se posta no perfil pessoal do Leopoldo; para religar, voltar \"twitter\" aqui.",
+      "mlabs": {
+        "profile_id": "ext_ODU3Njc3MA.qIkzLvvp0GbetUm__gFrr8",
+        "canais": {"instagram": "instagram", "facebook": "facebook", "threads": "threads"},
+        "obs": "Plano B de post e carrossel (Deilson 13/11/2026): só quando o Zoho falha de vez. Perfil Cunha Law no mLabs."
+      },
+      "ig_user_id": "17841459319979037",
+      "fb_page_id": "219015837972386"
     }
   }
 }
